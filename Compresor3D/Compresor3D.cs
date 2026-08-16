@@ -209,6 +209,26 @@ public static class Compresor3DEngine
             }
         }
 
+        // === Evaluar Funciones Universales en las 3 direcciones ===
+        if (datosLen >= 256) // necesita bloques de al menos 1024 bytes
+        {
+            Console.WriteLine($"  Probando Funciones Universales en 3 direcciones...");
+            for (int dir = 0; dir < 3; dir++)
+            {
+                byte[] funcData = cubo.ComprimirFunciones(out long funcSize, dir);
+                Console.WriteLine($"    {nombres[dir]}: {Utils.FormatearTamano(funcSize)}");
+                if (funcSize < mejorSize)
+                {
+                    mejorComprimido = funcData;
+                    mejorSize = funcSize;
+                    mejorDir = dir;
+                    mejorTotal = dir switch { 0 => totalX, 1 => totalY, 2 => totalZ };
+                    mejorUnicas = dir switch { 0 => (int)unicasX, 1 => (int)unicasY, 2 => (int)unicasZ };
+                    mejorMetodo = $"Funciones {nombres[dir]}";
+                }
+            }
+        }
+
         Console.WriteLine($"\n  >>> Ganador: {mejorMetodo} ({Utils.FormatearTamano(mejorSize)})");
 
         return (mejorComprimido, mejorSize, mejorDir, mejorTotal, mejorUnicas, mejorMetodo);

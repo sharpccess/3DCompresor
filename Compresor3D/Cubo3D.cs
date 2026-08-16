@@ -630,14 +630,126 @@ public sealed class Cubo3D
         return flat;
     }
 
+    // ==================== COMPRESIÓN FUNCIONES UNIVERSALES ====================
+
+    /// <summary>
+    /// Comprime con descomposición funcional: analiza el stream y lo expresa
+    /// como combinación de funciones universales indexadas + residual raw.
+    /// 
+    /// Formato:
+    ///   [0x55|dir: 1 byte]
+    ///   [totalLineas: int32]
+    ///   [lineLen: int32]
+    ///   [Stream FuncionesUniversales...]
+    /// </summary>
+    public byte[] ComprimirFunciones(out long compressedSize, int direccion, int tamanoBloque = 1024)
+    {
+        int sliceSize = Ancho * Alto;
+
+        int lineLen = direccion switch { 0 => Ancho, 1 => Alto, 2 => Profundidad, _ => throw new ArgumentException() };
+        int totalLines = direccion switch { 0 => Alto * Profundidad, 1 => Ancho * Profundidad, 2 => Ancho * Alto, _ => throw new ArgumentException() };
+
+        // Construir stream concatenando todas las líneas
+        byte[] data = new byte[totalLines * lineLen];
+        int pos = 0;
+        for (int li = 0; li < totalLines; li++)
+        {
+            int start = direccion switch
+            {
+                0 => (li % Alto) * Ancho + (li / Alto) * sliceSize,
+                1 => (li % Ancho) + (li / Ancho) * sliceSize,
+                2 => (li % Ancho) + (li / Ancho) * Ancho,
+                _ => 0
+            };
+            int stride = direccion switch { 0 => 1, 1 => Ancho, 2 => sliceSize, _ => 1 };
+            for (int j = 0; j < lineLen; j++)
+                data[pos++] = _flat[start + j * stride];
+        }
+
+        // Comprimir con Motor de Compresión unificado (funciones + microcódigo)
+        byte[] funcData = MotorCompresion.ComprimirStream(data, tamanoBloque);
+
+        // Construir resultado con cabecera
+        using var ms = new MemoryStream();
+        ms.WriteByte((byte)(0x54 | direccion)); // marker 0x54-0x56 (bits bajos = dirección)
+        WriteInt32(ms, totalLines);
+        WriteInt32(ms, lineLen);
+        ms.Write(funcData, 0, funcData.Length);
+
+        compressedSize = ms.Length;
+        return ms.ToArray();
+    }
+
+    /// <summary>Descomprime formato Funciones Universales.</summary>
+    private static byte[] DescomprimirFunciones(MemoryStream ms, byte dir, int ancho, int alto, int profundidad)
+    {
+        byte[] flat = new byte[ancho * alto * profundidad];
+        int sliceSize = ancho * alto;
+
+        int totalLines = ReadInt32(ms);
+        int lineLen = ReadInt32(ms);
+        int streamLen = totalLines * lineLen;
+
+        // Leer el resto como datos FuncionesUniversales
+        int remaining = (int)(ms.Length - ms.Position);
+        byte[] funcData = new byte[remaining];
+        int offset = 0;
+        while (offset < remaining)
+        {
+            int read = ms.Read(funcData, offset, remaining - offset);
+            if (read <= 0) throw new InvalidDataException("Datos FuncionesUniversales truncados.");
+            offset += read;
+        }
+
+        // Descomprimir stream (funciones + microcódigo)
+        byte[] stream = MotorCompresion.DescomprimirStream(funcData);
+
+        if (stream.Length != streamLen)
+            throw new InvalidDataException(
+                $"FuncionesUniversales: stream tiene {stream.Length} bytes, se esperaban {streamLen}");
+
+        // Reconstruir cubo
+        int sPos = 0;
+        for (int li = 0; li < totalLines; li++)
+        {
+            switch (dir)
+            {
+                case 0:
+                    {
+                        int y = li % alto, z = li / alto;
+                        Buffer.BlockCopy(stream, sPos, flat, y * ancho + z * sliceSize, lineLen);
+                    }
+                    break;
+                case 1:
+                    {
+                        int x = li % ancho, z = li / ancho;
+                        int baseIdx = x + z * sliceSize;
+                        for (int y = 0; y < lineLen; y++) flat[baseIdx + y * ancho] = stream[sPos + y];
+                    }
+                    break;
+                case 2:
+                    {
+                        int x = li % ancho, y = li / ancho;
+                        int baseIdx = x + y * ancho;
+                        for (int z = 0; z < lineLen; z++) flat[baseIdx + z * sliceSize] = stream[sPos + z];
+                    }
+                    break;
+            }
+            sPos += lineLen;
+        }
+
+        return flat;
+    }
+
     // ==================== DESCOMPRESIÓN ====================
 
     /// <summary>
-    /// Descomprime datos producidos por Comprimir(), ComprimirPackBitsDirecto(), ComprimirLZ77() o ComprimirMicroVM().
+    /// Descomprime datos producidos por cualquier método de compresión.
     /// Detecta automáticamente el formato por el primer byte:
     ///   - 0x00-0x02: formato deduplicación
     ///   - 0x40-0x42: formato LZ77
     ///   - 0x50-0x52: formato MicroVM
+    ///   - 0x55-0x57: formato Funciones Universales
     ///   - 0x80-0x82: formato PackBits directo
     /// </summary>
     public static byte[] Descomprimir(byte[] compressedData, int ancho, int alto, int profundidad)
@@ -648,10 +760,12 @@ public sealed class Cubo3D
 
         if (firstByte >= 0x80)
             return DescomprimirPackBitsDirecto(ms, (byte)(firstByte & 0x7F), ancho, alto, profundidad);
+        else if (firstByte >= 0x54)
+            return DescomprimirFunciones(ms, (byte)(firstByte & 0x03), ancho, alto, profundidad);
         else if (firstByte >= 0x50)
-            return DescomprimirMicroVM(ms, (byte)(firstByte & 0x0F), ancho, alto, profundidad);
+            return DescomprimirMicroVM(ms, (byte)(firstByte & 0x03), ancho, alto, profundidad);
         else if (firstByte >= 0x40)
-            return DescomprimirLZ77(ms, (byte)(firstByte & 0x3F), ancho, alto, profundidad);
+            return DescomprimirLZ77(ms, (byte)(firstByte & 0x03), ancho, alto, profundidad);
         else
             return DescomprimirDedup(ms, (byte)firstByte, ancho, alto, profundidad);
     }
