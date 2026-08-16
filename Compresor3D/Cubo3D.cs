@@ -151,57 +151,47 @@ public sealed class Cubo3D
     // ==================== COMPRESIÓN ====================
 
     /// <summary>
-    /// Comprime el cubo usando RLE en una sola dirección (0=X, 1=Y, 2=Z).
-    /// La dirección óptima se determina en el análisis (ContarRuns por dirección).
-    /// Formato por línea: [dirección: 1 byte] [RLE: count, value, count, value, ...]
+    /// Comprime el cubo usando PackBits híbrido en una sola dirección (0=X, 1=Y, 2=Z).
+    /// PackBits escribe bytes literales sin expansión y solo comprime repeticiones (runs ≥ 3).
+    /// Formato del stream: [totalLíneas: int32] [dir: 1 byte] [PackBits] [dir] [PackBits] ...
     /// </summary>
     public byte[] Comprimir(out long compressedSize, int direccion = 0)
     {
         using var ms = new MemoryStream();
         int sliceSize = Ancho * Alto;
-        byte[] rleBuf = new byte[Math.Max(Math.Max(Ancho, Alto), Profundidad) * 2];
 
-        int totalLines;
         switch (direccion)
         {
-            case 0: // Dirección X: líneas a lo largo del eje X (Y*Z líneas)
-                totalLines = Alto * Profundidad;
-                WriteInt32(ms, totalLines);
+            case 0: // Dirección X: Y*Z líneas, cada una de longitud Ancho
+                WriteInt32(ms, Alto * Profundidad);
                 for (int z = 0; z < Profundidad; z++)
                     for (int y = 0; y < Alto; y++)
                     {
-                        int start = y * Ancho + z * sliceSize; // (0, y, z)
-                        int rleLen = RleCompressBlock(_flat, start, Ancho, rleBuf);
-                        ms.WriteByte(0);
-                        ms.Write(rleBuf, 0, rleLen);
+                        int start = y * Ancho + z * sliceSize;
+                        ms.WriteByte(0); // dirección X
+                        PackBitsCompressToStream(ms, _flat, start, 1, Ancho);
                     }
                 break;
 
-            case 1: // Dirección Y: líneas a lo largo del eje Y (X*Z líneas)
-                totalLines = Ancho * Profundidad;
-                WriteInt32(ms, totalLines);
+            case 1: // Dirección Y: X*Z líneas, cada una de longitud Alto
+                WriteInt32(ms, Ancho * Profundidad);
                 for (int z = 0; z < Profundidad; z++)
                     for (int x = 0; x < Ancho; x++)
                     {
-                        int start = x + z * sliceSize; // (x, 0, z)
-                        var line = ReadLine(start, 1, Alto);
-                        int rleLen = RleCompressBlock(line, 0, line.Length, rleBuf);
-                        ms.WriteByte(1);
-                        ms.Write(rleBuf, 0, rleLen);
+                        int start = x + z * sliceSize;
+                        ms.WriteByte(1); // dirección Y
+                        PackBitsCompressToStream(ms, _flat, start, Ancho, Alto);
                     }
                 break;
 
-            case 2: // Dirección Z: líneas a lo largo del eje Z (X*Y líneas)
-                totalLines = Ancho * Alto;
-                WriteInt32(ms, totalLines);
+            case 2: // Dirección Z: X*Y líneas, cada una de longitud Profundidad
+                WriteInt32(ms, Ancho * Alto);
                 for (int y = 0; y < Alto; y++)
                     for (int x = 0; x < Ancho; x++)
                     {
-                        int start = x + y * Ancho; // (x, y, 0)
-                        var line = ReadLine(start, 2, Profundidad);
-                        int rleLen = RleCompressBlock(line, 0, line.Length, rleBuf);
-                        ms.WriteByte(2);
-                        ms.Write(rleBuf, 0, rleLen);
+                        int start = x + y * Ancho;
+                        ms.WriteByte(2); // dirección Z
+                        PackBitsCompressToStream(ms, _flat, start, sliceSize, Profundidad);
                     }
                 break;
 
@@ -217,16 +207,20 @@ public sealed class Cubo3D
 
     /// <summary>
     /// Descomprime datos producidos por Comprimir(), reconstruyendo el array plano original.
+    /// Usa contadores independientes por dirección para soportar cualquier mezcla de líneas.
     /// </summary>
     public static byte[] Descomprimir(byte[] compressedData, int ancho, int alto, int profundidad)
     {
         byte[] flat = new byte[ancho * alto * profundidad];
         int sliceSize = ancho * alto;
 
+        // Contadores independientes por dirección (soporta formatos mixtos)
+        int xLineIdx = 0, yLineIdx = 0, zLineIdx = 0;
+
         using var ms = new MemoryStream(compressedData);
         int totalLines = ReadInt32(ms);
 
-        for (int lineIdx = 0; lineIdx < totalLines; lineIdx++)
+        for (int i = 0; i < totalLines; i++)
         {
             int dirByte = ms.ReadByte();
             if (dirByte < 0) throw new InvalidDataException("Datos comprimidos truncados.");
@@ -240,42 +234,39 @@ public sealed class Cubo3D
                 _ => throw new InvalidDataException($"Dirección inválida: {dir}")
             };
 
-            // Descomprimir RLE de esta línea
-            byte[] lineData = RleDecompressStream(ms, lineLen);
+            byte[] lineData = PackBitsDecompressFromStream(ms, lineLen);
 
-            // Determinar la posición de inicio según el tipo de línea
-            int lineIndexInDirection;
             switch (dir)
             {
-                case 0: // Línea X
-                    lineIndexInDirection = lineIdx;
+                case 0: // Línea X: (0, y, z) → stride 1
                     {
-                        int y = lineIndexInDirection % alto;
-                        int z = lineIndexInDirection / alto;
+                        int y = xLineIdx % alto;
+                        int z = xLineIdx / alto;
                         int start = y * ancho + z * sliceSize;
                         Buffer.BlockCopy(lineData, 0, flat, start, lineLen);
+                        xLineIdx++;
                     }
                     break;
 
-                case 1: // Línea Y
-                    lineIndexInDirection = lineIdx - (alto * profundidad);
+                case 1: // Línea Y: (x, 0, z) → stride ancho
                     {
-                        int x = lineIndexInDirection % ancho;
-                        int z = lineIndexInDirection / ancho;
+                        int x = yLineIdx % ancho;
+                        int z = yLineIdx / ancho;
                         int baseIdx = x + z * sliceSize;
                         for (int y = 0; y < lineLen; y++)
                             flat[baseIdx + y * ancho] = lineData[y];
+                        yLineIdx++;
                     }
                     break;
 
-                case 2: // Línea Z
-                    lineIndexInDirection = lineIdx - (alto * profundidad) - (ancho * profundidad);
+                case 2: // Línea Z: (x, y, 0) → stride sliceSize
                     {
-                        int x = lineIndexInDirection % ancho;
-                        int y = lineIndexInDirection / ancho;
+                        int x = zLineIdx % ancho;
+                        int y = zLineIdx / ancho;
                         int baseIdx = x + y * ancho;
                         for (int z = 0; z < lineLen; z++)
                             flat[baseIdx + z * sliceSize] = lineData[z];
+                        zLineIdx++;
                     }
                     break;
             }
@@ -364,52 +355,116 @@ public sealed class Cubo3D
         return line;
     }
 
+    // ==================== PACKBITS HÍBRIDO ====================
+
     /// <summary>
-    /// RLE: comprime un bloque de bytes en un buffer pre-allocado.
-    /// Formato: [count, value, count, value, ...] donde count es un byte (1-255).
-    /// Devuelve la longitud del datos RLE escritos en el buffer.
+    /// PackBits híbrido: escribe literales sin expansión y comprime solo runs ≥ 3.
+    /// Formato:
+    ///   header 0..127  → (header+1) bytes literales siguientes
+    ///   header -1..-127 → repetir el siguiente byte (1-header) veces = runs de 2..128
+    /// Datos aleatorios: ~0.8% de overhead (no 100% del RLE puro).
+    /// Datos repetitivos: comprime hasta 128:1.
+    /// Escribe directamente al stream de salida.
     /// </summary>
-    private static int RleCompressBlock(byte[] source, int offset, int length, byte[] output)
+    private static void PackBitsCompressToStream(MemoryStream output, byte[] source, int start, int stride, int length)
     {
-        int outPos = 0;
-        int end = offset + length;
-        int i = offset;
+        if (length == 0) return;
 
-        while (i < end)
+        // Leer la línea completa (necesario para strides no contiguos)
+        byte[] line = new byte[length];
+        if (stride == 1)
         {
-            byte val = source[i];
-            int runLen = 1;
-            while (i + runLen < end && source[i + runLen] == val && runLen < 255)
-                runLen++;
-
-            output[outPos++] = (byte)runLen;
-            output[outPos++] = val;
-            i += runLen;
+            Buffer.BlockCopy(source, start, line, 0, length);
+        }
+        else
+        {
+            int idx = start;
+            for (int i = 0; i < length; i++)
+            {
+                line[i] = source[idx];
+                idx += stride;
+            }
         }
 
-        return outPos;
+        // Codificar con PackBits
+        int pos = 0;
+        while (pos < length)
+        {
+            // Buscar run de bytes iguales
+            int runLen = 1;
+            while (pos + runLen < length && line[pos + runLen] == line[pos] && runLen < 128)
+                runLen++;
+
+            if (runLen >= 3)
+            {
+                // Run: header = -(runLen - 1), seguido del valor
+                output.WriteByte((byte)(-(runLen - 1) & 0xFF));
+                output.WriteByte(line[pos]);
+                pos += runLen;
+            }
+            else
+            {
+                // Literal: acumular bytes no repetitivos
+                int litStart = pos;
+                pos++; // avanzar más allá del primer byte (que no tiene run)
+                while (pos < length)
+                {
+                    // Comprobar si empieza un run desde aquí
+                    int ahead = 1;
+                    while (pos + ahead < length && line[pos + ahead] == line[pos] && ahead < 128)
+                        ahead++;
+                    if (ahead >= 3) break; // empezar un run en la siguiente iteración
+
+                    pos++;
+                    if (pos - litStart >= 128) break; // máximo 128 literales por chunk
+                }
+
+                int litCount = pos - litStart;
+                output.WriteByte((byte)(litCount - 1)); // header 0..127
+                output.Write(line, litStart, litCount);
+            }
+        }
     }
 
     /// <summary>
-    /// RLE: descomprime desde un MemoryStream hacia un array del tamaño exacto de la línea.
+    /// Descomprime PackBits desde un MemoryStream, devolviendo exactamente expectedLen bytes.
     /// </summary>
-    private static byte[] RleDecompressStream(MemoryStream ms, int expectedLen)
+    private static byte[] PackBitsDecompressFromStream(MemoryStream ms, int expectedLen)
     {
         byte[] result = new byte[expectedLen];
         int pos = 0;
 
         while (pos < expectedLen)
         {
-            int countByte = ms.ReadByte();
-            int valByte = ms.ReadByte();
-            if (countByte < 0 || valByte < 0)
-                throw new InvalidDataException("Datos RLE truncados.");
+            int headerByte = ms.ReadByte();
+            if (headerByte < 0)
+                throw new InvalidDataException("Datos PackBits truncados.");
 
-            byte count = (byte)countByte;
-            byte val = (byte)valByte;
+            sbyte header = (sbyte)headerByte;
 
-            for (int j = 0; j < count && pos < expectedLen; j++)
-                result[pos++] = val;
+            if (header >= 0)
+            {
+                // Literal: leer (header + 1) bytes
+                int count = header + 1;
+                int remaining = expectedLen - pos;
+                int toRead = Math.Min(count, remaining);
+                int read = ms.Read(result, pos, toRead);
+                if (read < toRead)
+                    throw new InvalidDataException("Datos PackBits truncados en literal.");
+                pos += toRead;
+            }
+            else if (header > -128)
+            {
+                // Run: repetir el siguiente byte (1 - header) veces
+                int valByte = ms.ReadByte();
+                if (valByte < 0)
+                    throw new InvalidDataException("Datos PackBits truncados en run.");
+                int count = 1 - header; // 2..128
+                byte val = (byte)valByte;
+                for (int j = 0; j < count && pos < expectedLen; j++)
+                    result[pos++] = val;
+            }
+            // header == -128: no-op (compatibilidad con PackBits estándar)
         }
 
         return result;

@@ -163,19 +163,20 @@ static void MostrarTabla(System.Collections.Generic.List<ResultadoCompresion> re
 {
     // Cabecera de la tabla
     Console.WriteLine("  ┌───────┬──────────────────┬──────────────────┬──────────┬──────────┐");
-    Console.WriteLine("  │ Puesto│   Dimensiones    │  Tam. Comprimido │   Ratio  │  Tiempo  │");
+    Console.WriteLine("  │ Puesto│   Dimensiones    │  Runs (mejor dir)│  Calidad │  Tiempo  │");
     Console.WriteLine("  ├───────┼──────────────────┼──────────────────┼──────────┼──────────┤");
 
     for (int i = 0; i < topN; i++)
     {
         var r = resultados[i];
         string dims = $"{r.Ancho} x {r.Alto} x {r.Profundidad}";
-        string compressed = Utils.FormatearTamano(r.CompressedSize);
-        double ratio = tamanoOriginal > 0 ? (1.0 - (double)r.CompressedSize / tamanoOriginal) * 100 : 0;
+        string runs = $"{r.CompressedSize:N0}";
+        // Calidad: % de runs respecto al total de bytes (menos = mejor)
+        double calidad = tamanoOriginal > 0 ? (1.0 - (double)r.CompressedSize / tamanoOriginal) * 100 : 0;
         string tiempo = Utils.FormatearTiempo(r.Duracion);
 
         Console.WriteLine(
-            $"  │ {i + 1,5} │ {dims,-16} │ {compressed,16} │ {ratio,7:F1}% │ {tiempo,8} │");
+            $"  │ {i + 1,5} │ {dims,-16} │ {runs,16} │ {calidad,7:F1}% │ {tiempo,8} │");
     }
 
     Console.WriteLine("  └───────┴──────────────────┴──────────────────┴──────────┴──────────┘");

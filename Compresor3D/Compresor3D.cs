@@ -66,8 +66,8 @@ public static class Compresor3DEngine
 
             // La mejor dirección es la que tiene menos runs
             long mejorDirRuns = Math.Min(runsX, Math.Min(runsY, runsZ));
-            // Estimación: cada run ocupa 2 bytes (count + value)
-            long compressedSize = mejorDirRuns * 2;
+            // Score = runs en la mejor dirección (menos = más repetición = mejor compresión)
+            long compressedSize = mejorDirRuns;
 
             sw2.Stop();
 
