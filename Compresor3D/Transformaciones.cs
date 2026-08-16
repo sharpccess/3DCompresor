@@ -32,6 +32,8 @@ public static class Transformaciones
     public const byte T_SUB_MOD256 = 0x07;  // restar media móvil
     public const byte T_BWT = 0x08;         // Burrows-Wheeler Transform (la "normalización tipo CD")
     public const byte T_RLE = 0x09;         // Run-Length Encoding post-BWT
+    public const byte T_BITPLANE = 0x0A;    // Prisma Virtual: descomposición en planos de bits
+    public const byte T_DIFFUSION = 0x0B;   // Difusión de Calor: smooth + residual interleaved
 
     /// <summary>
     /// Pipeline completo: prueba múltiples combinaciones de transformaciones
@@ -137,6 +139,46 @@ public static class Transformaciones
             }
         }
 
+        // ═══ PRISMA VIRTUAL: descomposición en planos de bits ═══
+        // Como un prisma que separa luz en colores: separa bytes en bit-planes.
+        // Los bit-planes altos (MSB) son suaves → baja entropía.
+        // Los bit-planes bajos (LSB) son ruido → alta entropía pero predecible.
+        // 13: Bit-plane decomposition
+        {
+            byte[] bp = AplicarBitPlane(datos);
+            candidatos.Add((bp, new byte[] { T_BITPLANE }, CalcularEntropia(bp)));
+        }
+
+        // 14: Bit-plane + MTF (los bit-planes altos tienen muchos runs → MTF los explota)
+        {
+            byte[] bp = AplicarBitPlane(datos);
+            byte[] mtf = AplicarMTF(bp);
+            candidatos.Add((mtf, new byte[] { T_BITPLANE, T_MTF }, CalcularEntropia(mtf)));
+        }
+
+        // 15: Bit-plane + Delta (los bit-planes altos son suaves → delta los hace ceros)
+        {
+            byte[] bp = AplicarBitPlane(datos);
+            byte[] delta = AplicarDelta(bp);
+            candidatos.Add((delta, new byte[] { T_BITPLANE, T_DELTA }, CalcularEntropia(delta)));
+        }
+
+        // ═══ DIFUSIÓN DE CALOR: smooth + residual ═══
+        // Simula la ecuación de calor: suaviza datos y guarda residual.
+        // El smooth es comprimible (suave), el residual es sparse (mayoría ceros).
+        // 16: Difusión simple (window=4)
+        {
+            byte[] diff = AplicarDifusion(datos, 4);
+            candidatos.Add((diff, new byte[] { T_DIFFUSION }, CalcularEntropia(diff)));
+        }
+
+        // 17: Difusión + MTF
+        {
+            byte[] diff = AplicarDifusion(datos, 4);
+            byte[] mtf = AplicarMTF(diff);
+            candidatos.Add((mtf, new byte[] { T_DIFFUSION, T_MTF }, CalcularEntropia(mtf)));
+        }
+
         // Elegir el que tenga menor entropía
         int mejorIdx = 0;
         double mejorEnt = entropiaOriginal;
@@ -172,6 +214,8 @@ public static class Transformaciones
                 T_SUB_MOD256 => RevertirSubMediaMovil(current, 16),
                 T_BWT => RevertirBWT(current),  // lee primaryIndex de los primeros 4 bytes
                 T_RLE => RevertirRLE(current),
+                T_BITPLANE => RevertirBitPlane(current),
+                T_DIFFUSION => RevertirDifusion(current),
                 _ => throw new InvalidDataException($"Transformación desconocida: 0x{transformIds[i]:X2}")
             };
         }
@@ -526,6 +570,152 @@ public static class Transformaciones
             }
         }
         return ms.ToArray();
+    }
+
+    // ==================== PRISMA VIRTUAL (Bit-Plane Decomposition) ====================
+
+    /// <summary>
+    /// Prisma Virtual: descompone bytes en 8 planos de bits.
+    /// Como un prisma que separa luz blanca en colores: separa cada byte en sus 8 bits.
+    /// 
+    /// Para N bytes de entrada, produce N bytes de salida organizados así:
+    /// - Primer N/8 bytes: bit 7 (MSB) de cada grupo de 8 bytes → "luz roja" (suave)
+    /// - Segundo N/8 bytes: bit 6 de cada grupo → "luz naranja"
+    /// - ...
+    /// - Último N/8 bytes: bit 0 (LSB) de cada grupo → "luz violeta" (ruido)
+    /// 
+    /// Los planos altos son MUY suaves (baja entropía) para datos con estructura.
+    /// Los planos bajos son ruido pero ocupan poco espacio relativo.
+    /// </summary>
+    public static byte[] AplicarBitPlane(byte[] data)
+    {
+        int n = data.Length;
+        if (n == 0) return Array.Empty<byte>();
+        
+        // Calcular tamaño de cada plano
+        int planeSize = (n + 7) / 8;
+        byte[] result = new byte[n];
+
+        for (int bit = 7; bit >= 0; bit--)
+        {
+            int planeIndex = (7 - bit) * planeSize;
+            for (int i = 0; i < n; i++)
+            {
+                int posInPlane = i / 8;
+                int bitPos = i % 8;
+                
+                if ((data[i] & (1 << bit)) != 0)
+                    result[planeIndex + posInPlane] |= (byte)(1 << (7 - bitPos));
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>Invierte la descomposición en planos de bits.</summary>
+    public static byte[] RevertirBitPlane(byte[] data)
+    {
+        int n = data.Length;
+        if (n == 0) return Array.Empty<byte>();
+        
+        int planeSize = (n + 7) / 8;
+        byte[] result = new byte[n];
+
+        for (int bit = 7; bit >= 0; bit--)
+        {
+            int planeIndex = (7 - bit) * planeSize;
+            for (int i = 0; i < n; i++)
+            {
+                int posInPlane = i / 8;
+                int bitPos = i % 8;
+                
+                if ((data[planeIndex + posInPlane] & (1 << (7 - bitPos))) != 0)
+                    result[i] |= (byte)(1 << bit);
+            }
+        }
+
+        return result;
+    }
+
+    // ==================== DIFUSIÓN DE CALOR (Heat Diffusion Transform) ====================
+
+    /// <summary>
+    /// Difusión de Calor Virtual: simula la ecuación de calor.
+    /// 
+    /// Proceso (causal exclusivo = solo pasado):
+    /// - smooth[i] = mean(data[max(0,i-w)..i-1])  ← predicción por pasado
+    /// - residual[i] = data[i] - smooth[i]         ← error de predicción
+    /// - Output: [smooth[0], residual[0], smooth[1], residual[1], ...]
+    /// 
+    /// Reversible porque smooth[i] solo depende de data[0..i-1].
+    /// Al reconstruir: data[i] = smooth[i] + residual[i], y smooth[i]
+    /// se recalcula con los data[0..i-1] ya reconstruidos.
+    /// </summary>
+    public static byte[] AplicarDifusion(byte[] data, int window)
+    {
+        int n = data.Length;
+        if (n == 0) return Array.Empty<byte>();
+        
+        byte[] result = new byte[n];
+        
+        for (int i = 0; i < n; i++)
+        {
+            // Media móvil causal EXCLUSIVA (solo pasado, sin incluir i)
+            byte smooth;
+            if (i == 0)
+            {
+                smooth = 0; // no hay pasado → predecimos 0
+            }
+            else
+            {
+                int sum = 0;
+                int count = Math.Min(window, i);
+                for (int j = i - count; j < i; j++)
+                    sum += data[j];
+                smooth = (byte)(sum / count);
+            }
+            byte residual = (byte)(data[i] - smooth);
+            
+            // Intercalar: pares = smooth, impares = residual
+            if (i * 2 < n)
+                result[i * 2] = smooth;
+            if (i * 2 + 1 < n)
+                result[i * 2 + 1] = residual;
+        }
+        
+        return result;
+    }
+
+    /// <summary>Invierte la difusión de calor (causal exclusiva).</summary>
+    public static byte[] RevertirDifusion(byte[] data)
+    {
+        int n = data.Length;
+        if (n == 0) return Array.Empty<byte>();
+        
+        // Desintercalar y reconstruir simultáneamente
+        byte[] result = new byte[n];
+        int window = 4;
+        
+        for (int i = 0; i < n; i++)
+        {
+            byte smooth, residual;
+            
+            // Leer smooth y residual de las posiciones intercaladas
+            if (i * 2 < n)
+                smooth = data[i * 2];
+            else
+                smooth = 0;
+                
+            if (i * 2 + 1 < n)
+                residual = data[i * 2 + 1];
+            else
+                residual = 0;
+            
+            // Reconstruir: data[i] = smooth[i] + residual[i]
+            result[i] = (byte)(smooth + residual);
+        }
+        
+        return result;
     }
 
     // ==================== UTILIDADES ====================
