@@ -96,6 +96,12 @@ public static class Utils
                         archivo = "--decode-png:" + args[++i].Trim('"');
                     break;
 
+                case "--test-paq":
+                    archivo = "--test-paq";
+                    if (i + 1 < args.Length && !args[i + 1].StartsWith('-'))
+                        archivo = "--test-paq:" + args[++i].Trim('"');
+                    break;
+
                 case "--min-dim":
                     if (i + 1 < args.Length && int.TryParse(args[++i], out int min))
                         minDim = min;

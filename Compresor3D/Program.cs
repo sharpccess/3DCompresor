@@ -46,6 +46,19 @@ if (archivo != null && archivo.StartsWith("--decode-png"))
     return;
 }
 
+// ---- Comando: TEST PAQ1 (comparar con ZIP) ----
+if (archivo != null && archivo.StartsWith("--test-paq"))
+{
+    string testFile = archivo.Contains(':') ? archivo[(archivo.IndexOf(':') + 1)..] : "";
+    if (string.IsNullOrEmpty(testFile))
+    {
+        Console.WriteLine("Uso: Compresor3D --test-paq <archivo>");
+        return;
+    }
+    ProbarPAQ1(testFile);
+    return;
+}
+
 // ---- Comando: COMPRIMIR (análisis + compresión) ----
 EjecutarCompresion(archivo, minDim, maxDim, step);
 
@@ -407,4 +420,68 @@ static void DecodificarYComprimirPNG(string pngFile)
     Console.WriteLine($"  PNG directo:     {Utils.FormatearTamano(new FileInfo(pngFile).Length)} → {Utils.FormatearTamano(compressedSize3)} ({(double)compressedSize3 / new FileInfo(pngFile).Length * 100:F1}%)");
     Console.WriteLine($"  PNG→Raw→Compr:   {Utils.FormatearTamano(pixelesConHeader.Length)} → {Utils.FormatearTamano(compressedSize)} ({ratio:F1}%)");
     Console.WriteLine($"  Mejora:          {((double)compressedSize3 / compressedSize):F1}x mejor con decode");
+}
+
+static void ProbarPAQ1(string testFile)
+{
+    Console.WriteLine("╔══════════════════════════════════════════════════╗");
+    Console.WriteLine("║          Test PAQ1 vs ZIP                       ║");
+    Console.WriteLine("╚══════════════════════════════════════════════════╝");
+    Console.WriteLine();
+
+    if (!File.Exists(testFile))
+    {
+        Console.WriteLine($"  ERROR: No se encontró el archivo: {testFile}");
+        return;
+    }
+
+    byte[] data = File.ReadAllBytes(testFile);
+    long originalSize = data.Length;
+    Console.WriteLine($"  Archivo: {Path.GetFileName(testFile)}");
+    Console.WriteLine($"  Tamaño original: {Utils.FormatearTamano(originalSize)}");
+    Console.WriteLine();
+
+    // PAQ1
+    Console.WriteLine("  Comprimiendo con PAQ1...");
+    var sw = Stopwatch.StartNew();
+    byte[] compressedPAQ = CompresorPAQ.Comprimir(data);
+    sw.Stop();
+    long paqSize = compressedPAQ.Length;
+    Console.WriteLine($"  PAQ1: {Utils.FormatearTamano(originalSize)} → {Utils.FormatearTamano(paqSize)} ({(double)paqSize / originalSize * 100:F1}%) en {sw.ElapsedMilliseconds}ms");
+
+    // Verificar round-trip
+    Console.WriteLine("  Verificando round-trip...");
+    byte[] decompressed = CompresorPAQ.Descomprimir(compressedPAQ);
+    if (decompressed.Length == data.Length && decompressed.SequenceEqual(data))
+    {
+        Console.WriteLine("  ✓ Round-trip OK");
+    }
+    else
+    {
+        Console.WriteLine($"  ✗ Round-trip FAILED: esperado {data.Length}, obtenido {decompressed.Length}");
+    }
+
+    // Comparar con ZIP
+    Console.WriteLine();
+    Console.WriteLine("  Comprimiendo con ZIP para comparar...");
+    sw.Restart();
+    var cubo = new Cubo3D(1, 1, data.Length, data);
+    var resultado = cubo.ComprimirFunciones(out long zipSize, direccion: 1);
+    sw.Stop();
+    Console.WriteLine($"  ZIP:  {Utils.FormatearTamano(originalSize)} → {Utils.FormatearTamano(zipSize)} ({(double)zipSize / originalSize * 100:F1}%) en {sw.ElapsedMilliseconds}ms");
+
+    // Comparación
+    Console.WriteLine();
+    double ratioPAQ = (double)paqSize / originalSize;
+    double ratioZIP = (double)zipSize / originalSize;
+    double mejora = ratioZIP / ratioPAQ;
+    
+    if (paqSize < zipSize)
+    {
+        Console.WriteLine($"  ✓ PAQ1 GANA: {mejora:F2}x mejor que ZIP");
+    }
+    else
+    {
+        Console.WriteLine($"  ✗ PAQ1 PIERDE: {1/mejora:F2}x peor que ZIP");
+    }
 }
