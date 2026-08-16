@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "dgSpecHash": "+KoqG4K5n7g=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\emoti\\source\\repos\\compresor\\Compresor3D.GUI\\Compresor3D.GUI.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\emoti\\.nuget\\packages\\mathnet.numerics\\5.0.0\\mathnet.numerics.5.0.0.nupkg.sha512",
+    "C:\\Users\\emoti\\.nuget\\packages\\nwaves\\0.9.6\\nwaves.0.9.6.nupkg.sha512",
+    "C:\\Users\\emoti\\.nuget\\packages\\sixlabors.imagesharp\\4.1.0\\sixlabors.imagesharp.4.1.0.nupkg.sha512",
+    "C:\\Users\\emoti\\.nuget\\packages\\system.io.hashing\\8.0.0\\system.io.hashing.8.0.0.nupkg.sha512",
+    "C:\\Users\\emoti\\.nuget\\packages\\zstdsharp.port\\0.8.8\\zstdsharp.port.0.8.8.nupkg.sha512",
+    "C:\\Users\\emoti\\.nuget\\packages\\microsoft.netcore.app.ref\\8.0.30\\microsoft.netcore.app.ref.8.0.30.nupkg.sha512",
+    "C:\\Users\\emoti\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\8.0.30\\microsoft.windowsdesktop.app.ref.8.0.30.nupkg.sha512",
+    "C:\\Users\\emoti\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\8.0.30\\microsoft.aspnetcore.app.ref.8.0.30.nupkg.sha512",
+    "C:\\Users\\emoti\\.nuget\\packages\\microsoft.netcore.app.host.win-x64\\8.0.30\\microsoft.netcore.app.host.win-x64.8.0.30.nupkg.sha512"
+  ],
+  "logs": []
+}
