@@ -189,6 +189,26 @@ public static class Compresor3DEngine
             }
         }
 
+        // === Evaluar MicroVM en las 3 direcciones ===
+        if (datosLen >= 64) // MicroVM vale la pena en datos con cierto tamaño
+        {
+            Console.WriteLine($"  Probando MicroVM en 3 direcciones...");
+            for (int dir = 0; dir < 3; dir++)
+            {
+                byte[] microData = cubo.ComprimirMicroVM(out long microSize, dir);
+                Console.WriteLine($"    {nombres[dir]}: {Utils.FormatearTamano(microSize)}");
+                if (microSize < mejorSize)
+                {
+                    mejorComprimido = microData;
+                    mejorSize = microSize;
+                    mejorDir = dir;
+                    mejorTotal = dir switch { 0 => totalX, 1 => totalY, 2 => totalZ };
+                    mejorUnicas = dir switch { 0 => (int)unicasX, 1 => (int)unicasY, 2 => (int)unicasZ };
+                    mejorMetodo = $"MicroVM {nombres[dir]}";
+                }
+            }
+        }
+
         Console.WriteLine($"\n  >>> Ganador: {mejorMetodo} ({Utils.FormatearTamano(mejorSize)})");
 
         return (mejorComprimido, mejorSize, mejorDir, mejorTotal, mejorUnicas, mejorMetodo);

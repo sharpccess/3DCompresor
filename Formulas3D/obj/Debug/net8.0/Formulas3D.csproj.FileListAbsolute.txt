@@ -1,0 +1,11 @@
+C:\Users\emoti\source\repos\compresor\Formulas3D\obj\Debug\net8.0\Formulas3D.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\emoti\source\repos\compresor\Formulas3D\obj\Debug\net8.0\Formulas3D.AssemblyInfoInputs.cache
+C:\Users\emoti\source\repos\compresor\Formulas3D\obj\Debug\net8.0\Formulas3D.AssemblyInfo.cs
+C:\Users\emoti\source\repos\compresor\Formulas3D\obj\Debug\net8.0\Formulas3D.csproj.CoreCompileInputs.cache
+C:\Users\emoti\source\repos\compresor\Formulas3D\bin\Debug\net8.0\Formulas3D.deps.json
+C:\Users\emoti\source\repos\compresor\Formulas3D\bin\Debug\net8.0\Formulas3D.dll
+C:\Users\emoti\source\repos\compresor\Formulas3D\bin\Debug\net8.0\Formulas3D.pdb
+C:\Users\emoti\source\repos\compresor\Formulas3D\obj\Debug\net8.0\Formulas3D.dll
+C:\Users\emoti\source\repos\compresor\Formulas3D\obj\Debug\net8.0\refint\Formulas3D.dll
+C:\Users\emoti\source\repos\compresor\Formulas3D\obj\Debug\net8.0\Formulas3D.pdb
+C:\Users\emoti\source\repos\compresor\Formulas3D\obj\Debug\net8.0\ref\Formulas3D.dll

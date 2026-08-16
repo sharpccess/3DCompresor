@@ -1,4 +1,5 @@
 using System;
+using Formulas3D;
 
 namespace Compresor3D;
 
@@ -517,13 +518,126 @@ public sealed class Cubo3D
         return flat;
     }
 
+    // ==================== COMPRESIÓN MICROVM ====================
+
+    /// <summary>
+    /// Comprime con MicroVM: busca microprogramas que generen los datos.
+    /// En vez de trasladar datos, traslada planos ejecutables.
+    /// 
+    /// Formato:
+    ///   [0x50|dir: 1 byte]
+    ///   [totalLineas: int32]
+    ///   [lineLen: int32]
+    ///   [numBlocks: int32]
+    ///   { [origLen: int32][progLen: uint16][program bytes] }...
+    /// </summary>
+    public byte[] ComprimirMicroVM(out long compressedSize, int direccion, int tamanoBloque = 256)
+    {
+        int sliceSize = Ancho * Alto;
+
+        int lineLen = direccion switch { 0 => Ancho, 1 => Alto, 2 => Profundidad, _ => throw new ArgumentException() };
+        int totalLines = direccion switch { 0 => Alto * Profundidad, 1 => Ancho * Profundidad, 2 => Ancho * Alto, _ => throw new ArgumentException() };
+
+        // Construir stream concatenando todas las líneas
+        byte[] data = new byte[totalLines * lineLen];
+        int pos = 0;
+        for (int li = 0; li < totalLines; li++)
+        {
+            int start = direccion switch
+            {
+                0 => (li % Alto) * Ancho + (li / Alto) * sliceSize,
+                1 => (li % Ancho) + (li / Ancho) * sliceSize,
+                2 => (li % Ancho) + (li / Ancho) * Ancho,
+                _ => 0
+            };
+            int stride = direccion switch { 0 => 1, 1 => Ancho, 2 => sliceSize, _ => 1 };
+            for (int j = 0; j < lineLen; j++)
+                data[pos++] = _flat[start + j * stride];
+        }
+
+        // Comprimir con MicroVM
+        byte[] microData = MicroVM.ComprimirStream(data, tamanoBloque);
+
+        // Construir resultado con cabecera
+        using var ms = new MemoryStream();
+        ms.WriteByte((byte)(0x50 | direccion));
+        WriteInt32(ms, totalLines);
+        WriteInt32(ms, lineLen);
+        ms.Write(microData, 0, microData.Length);
+
+        compressedSize = ms.Length;
+        return ms.ToArray();
+    }
+
+    /// <summary>Descomprime formato MicroVM.</summary>
+    private static byte[] DescomprimirMicroVM(MemoryStream ms, byte dir, int ancho, int alto, int profundidad)
+    {
+        byte[] flat = new byte[ancho * alto * profundidad];
+        int sliceSize = ancho * alto;
+
+        int totalLines = ReadInt32(ms);
+        int lineLen = ReadInt32(ms);
+        int streamLen = totalLines * lineLen;
+
+        // Leer el resto como datos MicroVM
+        int remaining = (int)(ms.Length - ms.Position);
+        byte[] microData = new byte[remaining];
+        int offset = 0;
+        while (offset < remaining)
+        {
+            int read = ms.Read(microData, offset, remaining - offset);
+            if (read <= 0) throw new InvalidDataException("Datos MicroVM truncados.");
+            offset += read;
+        }
+
+        // Descomprimir stream MicroVM
+        byte[] stream = MicroVM.DescomprimirStream(microData);
+
+        if (stream.Length != streamLen)
+            throw new InvalidDataException(
+                $"MicroVM: stream descomprimido tiene {stream.Length} bytes, se esperaban {streamLen}");
+
+        // Reconstruir cubo desde el stream
+        int sPos = 0;
+        for (int li = 0; li < totalLines; li++)
+        {
+            switch (dir)
+            {
+                case 0:
+                    {
+                        int y = li % alto, z = li / alto;
+                        Buffer.BlockCopy(stream, sPos, flat, y * ancho + z * sliceSize, lineLen);
+                    }
+                    break;
+                case 1:
+                    {
+                        int x = li % ancho, z = li / ancho;
+                        int baseIdx = x + z * sliceSize;
+                        for (int y = 0; y < lineLen; y++) flat[baseIdx + y * ancho] = stream[sPos + y];
+                    }
+                    break;
+                case 2:
+                    {
+                        int x = li % ancho, y = li / ancho;
+                        int baseIdx = x + y * ancho;
+                        for (int z = 0; z < lineLen; z++) flat[baseIdx + z * sliceSize] = stream[sPos + z];
+                    }
+                    break;
+            }
+            sPos += lineLen;
+        }
+
+        return flat;
+    }
+
     // ==================== DESCOMPRESIÓN ====================
 
     /// <summary>
-    /// Descomprime datos producidos por Comprimir(), ComprimirPackBitsDirecto() o ComprimirLZ77().
+    /// Descomprime datos producidos por Comprimir(), ComprimirPackBitsDirecto(), ComprimirLZ77() o ComprimirMicroVM().
     /// Detecta automáticamente el formato por el primer byte:
     ///   - 0x00-0x02: formato deduplicación
     ///   - 0x40-0x42: formato LZ77
+    ///   - 0x50-0x52: formato MicroVM
     ///   - 0x80-0x82: formato PackBits directo
     /// </summary>
     public static byte[] Descomprimir(byte[] compressedData, int ancho, int alto, int profundidad)
@@ -534,6 +648,8 @@ public sealed class Cubo3D
 
         if (firstByte >= 0x80)
             return DescomprimirPackBitsDirecto(ms, (byte)(firstByte & 0x7F), ancho, alto, profundidad);
+        else if (firstByte >= 0x50)
+            return DescomprimirMicroVM(ms, (byte)(firstByte & 0x0F), ancho, alto, profundidad);
         else if (firstByte >= 0x40)
             return DescomprimirLZ77(ms, (byte)(firstByte & 0x3F), ancho, alto, profundidad);
         else
