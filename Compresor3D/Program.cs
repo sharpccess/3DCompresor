@@ -154,9 +154,10 @@ static void EjecutarCompresion(string archivo, int minDim, int maxDim, int step)
 
     // Guardar archivo .cubo
     string rutaCubo = Path.ChangeExtension(archivo, ".cubo");
+    string nombreOriginal = Path.GetFileName(archivo);
     Console.WriteLine();
     Console.WriteLine($"  Guardando archivo .cubo: {rutaCubo}");
-    Compresor3DEngine.GuardarCubo(rutaCubo, mejor.Ancho, mejor.Alto, mejor.Profundidad,
+    Compresor3DEngine.GuardarCubo(rutaCubo, nombreOriginal, mejor.Ancho, mejor.Alto, mejor.Profundidad,
         tamanoOriginal, datosComprimidos);
     Console.WriteLine($"  Archivo guardado correctamente ({Utils.FormatearTamano(new FileInfo(rutaCubo).Length)}).");
     Console.WriteLine();

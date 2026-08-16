@@ -176,20 +176,26 @@ public static class Compresor3DEngine
     /// Guarda los datos comprimidos en formato .cubo.
     /// Formato:
     ///   - Magic: "CUBO" (4 bytes ASCII)
-    ///   - Versión: 1 (byte)
+    ///   - Versión: 2 (byte)
+    ///   - Nombre original: [longitud: int32] [UTF-8 bytes]
     ///   - Ancho, Alto, Profundidad: 4 bytes cada uno (little-endian)
     ///   - Tamaño original: 8 bytes (long, little-endian)
-    ///   - Datos comprimidos: resto del archivo
+    ///   - Datos comprimidos: [longitud: int32] [bytes]
     /// </summary>
-    public static void GuardarCubo(string ruta, int ancho, int alto, int profundidad,
+    public static void GuardarCubo(string ruta, string nombreOriginal,
+        int ancho, int alto, int profundidad,
         long tamanoOriginal, byte[] datosComprimidos)
     {
         using var fs = new FileStream(ruta, FileMode.Create, FileAccess.Write);
         using var bw = new BinaryWriter(fs);
 
+        byte[] nombreBytes = System.Text.Encoding.UTF8.GetBytes(nombreOriginal);
+
         // Cabecera
         bw.Write("CUBO"u8);                                  // Magic
-        bw.Write((byte)1);                                   // Versión
+        bw.Write((byte)2);                                   // Versión 2
+        bw.Write(nombreBytes.Length);                         // Longitud del nombre
+        bw.Write(nombreBytes);                                // Nombre original (UTF-8)
         bw.Write(ancho);                                     // Ancho
         bw.Write(alto);                                      // Alto
         bw.Write(profundidad);                               // Profundidad
@@ -199,7 +205,8 @@ public static class Compresor3DEngine
     }
 
     /// <summary>
-    /// Lee y descomprime un archivo .cubo, reconstruyendo el archivo original.
+    /// Lee y descomprime un archivo .cubo, reconstruyendo el archivo original
+    /// con su nombre y extensión correctos.
     /// </summary>
     public static void DescomprimirArchivo(string rutaCubo)
     {
@@ -213,8 +220,17 @@ public static class Compresor3DEngine
             throw new InvalidDataException("El archivo no tiene el formato .cubo (magic incorrecto).");
 
         byte version = br.ReadByte();
-        if (version != 1)
+        if (version > 2)
             throw new InvalidDataException($"Versión de formato no soportada: {version}");
+
+        // Versión 2: leer nombre original
+        string? nombreOriginal = null;
+        if (version >= 2)
+        {
+            int nombreLen = br.ReadInt32();
+            byte[] nombreBytes = br.ReadBytes(nombreLen);
+            nombreOriginal = System.Text.Encoding.UTF8.GetString(nombreBytes);
+        }
 
         int ancho = br.ReadInt32();
         int alto = br.ReadInt32();
@@ -234,14 +250,30 @@ public static class Compresor3DEngine
             throw new InvalidDataException(
                 $"Tamaño descomprimido ({flat.Length}) no coincide con el original ({tamanoOriginal}).");
 
-        // Determinar ruta de salida: quitar extensión .cubo
+        // Determinar ruta de salida
         string dir = Path.GetDirectoryName(rutaCubo) ?? ".";
-        string nombre = Path.GetFileNameWithoutExtension(rutaCubo);
-        string rutaSalida = Path.Combine(dir, nombre);
+        string rutaSalida;
 
-        // Si el archivo ya existe sin extensión, añadir .original
+        if (nombreOriginal != null && nombreOriginal.Length > 0)
+        {
+            // Usar el nombre original guardado en la cabecera
+            rutaSalida = Path.Combine(dir, nombreOriginal);
+        }
+        else
+        {
+            // Fallback para versión 1: quitar extensión .cubo
+            string nombre = Path.GetFileNameWithoutExtension(rutaCubo);
+            rutaSalida = Path.Combine(dir, nombre);
+        }
+
+        // Si el archivo ya existe, añadir .restaurado
         if (File.Exists(rutaSalida))
-            rutaSalida = Path.Combine(dir, nombre + ".original");
+        {
+            string sinExt = Path.Combine(dir,
+                Path.GetFileNameWithoutExtension(rutaSalida) + ".restaurado" +
+                Path.GetExtension(rutaSalida));
+            rutaSalida = sinExt;
+        }
 
         File.WriteAllBytes(rutaSalida, flat);
 
