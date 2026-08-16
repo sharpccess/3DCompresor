@@ -10,3 +10,4 @@ C:\Users\emoti\source\repos\compresor\Formulas3D\obj\Debug\net8.0\refint\Formula
 C:\Users\emoti\source\repos\compresor\Formulas3D\obj\Debug\net8.0\Formulas3D.pdb
 C:\Users\emoti\source\repos\compresor\Formulas3D\obj\Debug\net8.0\ref\Formulas3D.dll
 C:\Users\emoti\source\repos\compresor\Formulas3D\obj\Debug\net8.0\Formulas3D.csproj.AssemblyReference.cache
+C:\Users\emoti\source\repos\compresor\Formulas3D\obj\Debug\net8.0\Formulas3D.sourcelink.json

@@ -143,41 +143,34 @@ public static class Transformaciones
         // Como un prisma que separa luz en colores: separa bytes en bit-planes.
         // Los bit-planes altos (MSB) son suaves → baja entropía.
         // Los bit-planes bajos (LSB) son ruido → alta entropía pero predecible.
-        // 13: Bit-plane decomposition
+        // Requiere n múltiplo de 8 (nuestros segmentos de 4096 lo son).
+        if (datos.Length % 8 == 0)
         {
-            byte[] bp = AplicarBitPlane(datos);
-            candidatos.Add((bp, new byte[] { T_BITPLANE }, CalcularEntropia(bp)));
-        }
+            // 13: Bit-plane decomposition
+            {
+                byte[] bp = AplicarBitPlane(datos);
+                candidatos.Add((bp, new byte[] { T_BITPLANE }, CalcularEntropia(bp)));
+            }
 
-        // 14: Bit-plane + MTF (los bit-planes altos tienen muchos runs → MTF los explota)
-        {
-            byte[] bp = AplicarBitPlane(datos);
-            byte[] mtf = AplicarMTF(bp);
-            candidatos.Add((mtf, new byte[] { T_BITPLANE, T_MTF }, CalcularEntropia(mtf)));
-        }
+            // 14: Bit-plane + MTF
+            {
+                byte[] bp = AplicarBitPlane(datos);
+                byte[] mtf = AplicarMTF(bp);
+                candidatos.Add((mtf, new byte[] { T_BITPLANE, T_MTF }, CalcularEntropia(mtf)));
+            }
 
-        // 15: Bit-plane + Delta (los bit-planes altos son suaves → delta los hace ceros)
-        {
-            byte[] bp = AplicarBitPlane(datos);
-            byte[] delta = AplicarDelta(bp);
-            candidatos.Add((delta, new byte[] { T_BITPLANE, T_DELTA }, CalcularEntropia(delta)));
+            // 15: Bit-plane + Delta
+            {
+                byte[] bp = AplicarBitPlane(datos);
+                byte[] delta = AplicarDelta(bp);
+                candidatos.Add((delta, new byte[] { T_BITPLANE, T_DELTA }, CalcularEntropia(delta)));
+            }
         }
 
         // ═══ DIFUSIÓN DE CALOR: smooth + residual ═══
-        // Simula la ecuación de calor: suaviza datos y guarda residual.
-        // El smooth es comprimible (suave), el residual es sparse (mayoría ceros).
-        // 16: Difusión simple (window=4)
-        {
-            byte[] diff = AplicarDifusion(datos, 4);
-            candidatos.Add((diff, new byte[] { T_DIFFUSION }, CalcularEntropia(diff)));
-        }
-
-        // 17: Difusión + MTF
-        {
-            byte[] diff = AplicarDifusion(datos, 4);
-            byte[] mtf = AplicarMTF(diff);
-            candidatos.Add((mtf, new byte[] { T_DIFFUSION, T_MTF }, CalcularEntropia(mtf)));
-        }
+        // TODO: la difusión cambia el tamaño del output (duplica).
+        // Necesita un formato especial para almacenar smooth + residual.
+        // Por ahora desactivada — delta encoding ya hace algo similar.
 
         // Elegir el que tenga menor entropía
         int mejorIdx = 0;
@@ -593,14 +586,18 @@ public static class Transformaciones
         if (n == 0) return Array.Empty<byte>();
         
         int numGroups = (n + 7) / 8;
-        byte[] result = new byte[n];
+        int paddedLen = numGroups * 8; // puede ser > n si n no es múltiplo de 8
+        byte[] result = new byte[paddedLen];
 
         for (int g = 0; g < numGroups; g++)
         {
-            // Cargar hasta 8 bytes del grupo
+            // Cargar hasta 8 bytes del grupo (0 si falta)
             byte[] group = new byte[8];
-            for (int b = 0; b < 8 && g * 8 + b < n; b++)
-                group[b] = data[g * 8 + b];
+            for (int b = 0; b < 8; b++)
+            {
+                int idx = g * 8 + b;
+                group[b] = idx < n ? data[idx] : (byte)0;
+            }
 
             // Para cada bit-plane (7=MSB → 0=LSB)
             for (int bit = 7; bit >= 0; bit--)
@@ -622,16 +619,15 @@ public static class Transformaciones
     /// <summary>Invierte la descomposición en planos de bits.</summary>
     public static byte[] RevertirBitPlane(byte[] data)
     {
-        int n = data.Length;
-        if (n == 0) return Array.Empty<byte>();
+        int paddedLen = data.Length;
+        if (paddedLen == 0) return Array.Empty<byte>();
         
-        int numGroups = (n + 7) / 8;
-        byte[] result = new byte[n];
+        int numGroups = paddedLen / 8;
+        byte[] result = new byte[paddedLen];
 
         for (int g = 0; g < numGroups; g++)
         {
-            // Para cada grupo, reconstruir los 8 bytes desde los 8 bit-planes
-            for (int b = 0; b < 8 && g * 8 + b < n; b++)
+            for (int b = 0; b < 8; b++)
             {
                 byte val = 0;
                 for (int bit = 7; bit >= 0; bit--)
