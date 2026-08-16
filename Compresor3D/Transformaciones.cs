@@ -592,20 +592,27 @@ public static class Transformaciones
         int n = data.Length;
         if (n == 0) return Array.Empty<byte>();
         
-        // Calcular tamaño de cada plano
-        int planeSize = (n + 7) / 8;
+        int numGroups = (n + 7) / 8;
         byte[] result = new byte[n];
 
-        for (int bit = 7; bit >= 0; bit--)
+        for (int g = 0; g < numGroups; g++)
         {
-            int planeIndex = (7 - bit) * planeSize;
-            for (int i = 0; i < n; i++)
+            // Cargar hasta 8 bytes del grupo
+            byte[] group = new byte[8];
+            for (int b = 0; b < 8 && g * 8 + b < n; b++)
+                group[b] = data[g * 8 + b];
+
+            // Para cada bit-plane (7=MSB → 0=LSB)
+            for (int bit = 7; bit >= 0; bit--)
             {
-                int posInPlane = i / 8;
-                int bitPos = i % 8;
-                
-                if ((data[i] & (1 << bit)) != 0)
-                    result[planeIndex + posInPlane] |= (byte)(1 << (7 - bitPos));
+                int planeIndex = (7 - bit) * numGroups;
+                byte planeByte = 0;
+                for (int b = 0; b < 8; b++)
+                {
+                    if ((group[b] & (1 << bit)) != 0)
+                        planeByte |= (byte)(1 << (7 - b));
+                }
+                result[planeIndex + g] = planeByte;
             }
         }
 
@@ -618,19 +625,22 @@ public static class Transformaciones
         int n = data.Length;
         if (n == 0) return Array.Empty<byte>();
         
-        int planeSize = (n + 7) / 8;
+        int numGroups = (n + 7) / 8;
         byte[] result = new byte[n];
 
-        for (int bit = 7; bit >= 0; bit--)
+        for (int g = 0; g < numGroups; g++)
         {
-            int planeIndex = (7 - bit) * planeSize;
-            for (int i = 0; i < n; i++)
+            // Para cada grupo, reconstruir los 8 bytes desde los 8 bit-planes
+            for (int b = 0; b < 8 && g * 8 + b < n; b++)
             {
-                int posInPlane = i / 8;
-                int bitPos = i % 8;
-                
-                if ((data[planeIndex + posInPlane] & (1 << (7 - bitPos))) != 0)
-                    result[i] |= (byte)(1 << bit);
+                byte val = 0;
+                for (int bit = 7; bit >= 0; bit--)
+                {
+                    int planeIndex = (7 - bit) * numGroups;
+                    if ((data[planeIndex + g] & (1 << (7 - b))) != 0)
+                        val |= (byte)(1 << bit);
+                }
+                result[g * 8 + b] = val;
             }
         }
 
