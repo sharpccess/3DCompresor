@@ -169,19 +169,50 @@ public static class Compresor3DEngine
             Console.WriteLine($"  Mejor PackBits: {nombres[mejorDir]} (runs: {mejorRuns:n0}, costo est. {costoDirecto:n0} bytes)");
         }
 
-        // === Evaluar LZ77 en las 3 direcciones ===
-        if (datosLen >= 512) // solo vale la pena en datos no triviales
+        // === Clasificación multi-nivel: predecir mejor método sin fuerza bruta ===
+        var clasif = Clasificador.Clasificar(datos);
+        var ranking = Clasificador.Ranking(clasif);
+        
+        Console.WriteLine($"\n  Clasificador multi-nivel:");
+        Console.WriteLine($"    Entropía bytes: {clasif.features.entropiaBytes:F2} bits/byte");
+        Console.WriteLine($"    Entropía deltas: {clasif.features.entropiaDeltas:F2} bits/byte");
+        Console.WriteLine($"    Deltas cercanas: {clasif.features.ratioDeltasCercanas:P1}");
+        Console.WriteLine($"    Autocorrelación: {clasif.features.mejorAutocorrelacion:F3} (lag={clasif.features.mejorLag})");
+        Console.WriteLine($"    Runs: {clasif.features.numRuns:n0} (ratio={clasif.features.ratioRuns:F3})");
+        Console.WriteLine($"    Ceros: {clasif.features.ratioCeros:P1}");
+        Console.WriteLine($"    Líneas únicas est.: {clasif.features.ratioUnicasEstimado:P1}");
+        Console.WriteLine($"    → Predicción: {Clasificador.NombreMetodo(clasif.metodo)} (confianza: {clasif.confianza:P0})");
+        Console.Write($"    Ranking: ");
+        for (int i = 0; i < Math.Min(4, ranking.Length); i++)
+            Console.Write($"{Clasificador.NombreMetodo(ranking[i])} ");
+        Console.WriteLine();
+
+        // Determinar qué métodos costosos ejecutar según el ranking
+        // Siempre ejecutamos Dedup y PackBits (son baratos)
+        var metodosACostosos = new HashSet<Clasificador.Metodo>();
+        if (clasif.confianza > 0.3)
         {
-            Console.WriteLine($"  Probando LZ77 en 3 direcciones...");
+            // Alta confianza: solo el top 1
+            if (ranking[0] >= Clasificador.Metodo.LZ77) metodosACostosos.Add(ranking[0]);
+        }
+        else
+        {
+            // Baja confianza: top 2-3 métodos costosos
+            for (int i = 0; i < 3; i++)
+                if (ranking[i] >= Clasificador.Metodo.LZ77) metodosACostosos.Add(ranking[i]);
+        }
+
+        // === Ejecutar métodos costosos solo si el clasificador los recomienda ===
+        if (metodosACostosos.Contains(Clasificador.Metodo.LZ77) && datosLen >= 512)
+        {
+            Console.WriteLine($"  Probando LZ77 (recomendado por clasificador)...");
             for (int dir = 0; dir < 3; dir++)
             {
                 byte[] lz77Data = cubo.ComprimirLZ77(out long lz77Size, dir);
                 Console.WriteLine($"    {nombres[dir]}: {Utils.FormatearTamano(lz77Size)}");
                 if (lz77Size < mejorSize)
                 {
-                    mejorComprimido = lz77Data;
-                    mejorSize = lz77Size;
-                    mejorDir = dir;
+                    mejorComprimido = lz77Data; mejorSize = lz77Size; mejorDir = dir;
                     mejorTotal = dir switch { 0 => totalX, 1 => totalY, 2 => totalZ };
                     mejorUnicas = dir switch { 0 => (int)unicasX, 1 => (int)unicasY, 2 => (int)unicasZ };
                     mejorMetodo = $"LZ77 {nombres[dir]}";
@@ -189,19 +220,16 @@ public static class Compresor3DEngine
             }
         }
 
-        // === Evaluar MicroVM en las 3 direcciones ===
-        if (datosLen >= 64) // MicroVM vale la pena en datos con cierto tamaño
+        if (metodosACostosos.Contains(Clasificador.Metodo.MicroVM) && datosLen >= 64)
         {
-            Console.WriteLine($"  Probando MicroVM en 3 direcciones...");
+            Console.WriteLine($"  Probando MicroVM (recomendado por clasificador)...");
             for (int dir = 0; dir < 3; dir++)
             {
                 byte[] microData = cubo.ComprimirMicroVM(out long microSize, dir);
                 Console.WriteLine($"    {nombres[dir]}: {Utils.FormatearTamano(microSize)}");
                 if (microSize < mejorSize)
                 {
-                    mejorComprimido = microData;
-                    mejorSize = microSize;
-                    mejorDir = dir;
+                    mejorComprimido = microData; mejorSize = microSize; mejorDir = dir;
                     mejorTotal = dir switch { 0 => totalX, 1 => totalY, 2 => totalZ };
                     mejorUnicas = dir switch { 0 => (int)unicasX, 1 => (int)unicasY, 2 => (int)unicasZ };
                     mejorMetodo = $"MicroVM {nombres[dir]}";
@@ -209,25 +237,25 @@ public static class Compresor3DEngine
             }
         }
 
-        // === Evaluar Funciones Universales en las 3 direcciones ===
-        if (datosLen >= 256) // necesita bloques de al menos 1024 bytes
+        if (metodosACostosos.Contains(Clasificador.Metodo.Funciones) && datosLen >= 256)
         {
-            Console.WriteLine($"  Probando Funciones Universales en 3 direcciones...");
+            Console.WriteLine($"  Probando Funciones (recomendado por clasificador)...");
             for (int dir = 0; dir < 3; dir++)
             {
                 byte[] funcData = cubo.ComprimirFunciones(out long funcSize, dir);
                 Console.WriteLine($"    {nombres[dir]}: {Utils.FormatearTamano(funcSize)}");
                 if (funcSize < mejorSize)
                 {
-                    mejorComprimido = funcData;
-                    mejorSize = funcSize;
-                    mejorDir = dir;
+                    mejorComprimido = funcData; mejorSize = funcSize; mejorDir = dir;
                     mejorTotal = dir switch { 0 => totalX, 1 => totalY, 2 => totalZ };
                     mejorUnicas = dir switch { 0 => (int)unicasX, 1 => (int)unicasY, 2 => (int)unicasZ };
                     mejorMetodo = $"Funciones {nombres[dir]}";
                 }
             }
         }
+
+        if (metodosACostosos.Count == 0)
+            Console.WriteLine($"  Clasificador predice datos incompresibles (entropía alta). Solo PackBits/Dedup.");
 
         Console.WriteLine($"\n  >>> Ganador: {mejorMetodo} ({Utils.FormatearTamano(mejorSize)})");
 
