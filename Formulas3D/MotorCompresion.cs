@@ -788,8 +788,8 @@ public static class MotorCompresion
     //  SECCIÓN 4b: ZSTANDARD (ZstdSharp — compresor de primer mundo)
     // =====================================================================
 
-    /// <summary>Comprime con Zstandard (nivel 15 — balance ratio/velocidad).</summary>
-    public static byte[] ComprimirZstd(byte[] data, int level = 15)
+    /// <summary>Comprime con Zstandard (nivel 22 — máxima compresión).</summary>
+    public static byte[] ComprimirZstd(byte[] data, int level = 22)
     {
         using var compressor = new Compressor(level);
         var compressed = compressor.Wrap(data);

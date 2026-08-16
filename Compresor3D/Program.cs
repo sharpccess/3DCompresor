@@ -2,6 +2,8 @@
 using System.Diagnostics;
 using System.IO;
 using Compresor3D;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
 
 // ============================================================
 //  Compresor3D - Compresión de archivos mediante reordenamiento
@@ -21,6 +23,26 @@ if (archivo == null)
 if (descomprimir)
 {
     EjecutarDescompresion(archivo);
+    return;
+}
+
+// ---- Comando: GENERAR TEST (archivo BMP con estructura) ----
+if (archivo == "--generar-test")
+{
+    GenerarArchivoTest();
+    return;
+}
+
+// ---- Comando: DECODE PNG (comprimir pixeles raw) ----
+if (archivo != null && archivo.StartsWith("--decode-png"))
+{
+    string pngFile = archivo.Contains(':') ? archivo[(archivo.IndexOf(':') + 1)..] : "";
+    if (string.IsNullOrEmpty(pngFile))
+    {
+        Console.WriteLine("Uso: Compresor3D --decode-png <archivo.png>");
+        return;
+    }
+    DecodificarYComprimirPNG(pngFile);
     return;
 }
 
@@ -182,4 +204,207 @@ static void MostrarTabla(System.Collections.Generic.List<ResultadoCompresion> re
     }
 
     Console.WriteLine("  └───────┴──────────────────┴──────────────────┴──────────┴──────────┘");
+}
+
+// ============================================================
+//  GENERAR ARCHIVO DE TEST (BMP con estructura)
+// ============================================================
+static void GenerarArchivoTest()
+{
+    Console.WriteLine("Generando archivo de test (BMP 512x512 con estructura)...");
+
+    int width = 512, height = 512;
+    int rowBytes = width * 3;
+    int padding = (4 - rowBytes % 4) % 4;
+    int pixelDataSize = (rowBytes + padding) * height;
+
+    using var ms = new MemoryStream();
+    using var bw = new BinaryWriter(ms);
+
+    // File header (14 bytes)
+    int fileSize = 14 + 40 + pixelDataSize;
+    bw.Write((byte)'B'); bw.Write((byte)'M');
+    bw.Write(fileSize);
+    bw.Write(0); // reserved
+    bw.Write(14 + 40); // offset to pixel data
+
+    // Info header (40 bytes)
+    bw.Write(40); // header size
+    bw.Write(width);
+    bw.Write(height);
+    bw.Write((short)1); // planes
+    bw.Write((short)24); // bits per pixel
+    bw.Write(0); // compression (BI_RGB)
+    bw.Write(pixelDataSize);
+    bw.Write(2835); // X ppm
+    bw.Write(2835); // Y ppm
+    bw.Write(0); // colors used
+    bw.Write(0); // important colors
+
+    // Pixel data (BGR, bottom-up)
+    var rng = new Random(42);
+    for (int y = 0; y < height; y++)
+    {
+        int actualY = height - 1 - y; // BMP is bottom-up
+        for (int x = 0; x < width; x++)
+        {
+            byte r, g, b;
+
+            if (actualY < 128 && x < 256)
+            {
+                // Cuadrante 1: Gradiente suave (ideal para delta/BWT)
+                b = (byte)(x * 255 / 255);
+                g = (byte)(actualY * 255 / 127);
+                r = (byte)((x + actualY) / 2);
+            }
+            else if (actualY < 128)
+            {
+                // Cuadrante 2: Patrón repetido (ideal para BWT)
+                int pattern = (x + actualY * 3) % 16;
+                b = g = r = (byte)(pattern * 16);
+            }
+            else if (x < 256)
+            {
+                // Cuadrante 3: Regiones uniformes con bordes (ideal para RLE)
+                int region = (actualY / 32 + x / 32) % 4;
+                (b, g, r) = region switch
+                {
+                    0 => ((byte)255, (byte)0, (byte)0),
+                    1 => ((byte)0, (byte)255, (byte)0),
+                    2 => ((byte)0, (byte)0, (byte)255),
+                    _ => ((byte)255, (byte)255, (byte)255)
+                };
+            }
+            else
+            {
+                // Cuadrante 4: Onda sinusoidal (estructura predecible)
+                double wave = Math.Sin(x * 0.1) * Math.Cos(actualY * 0.08);
+                byte val = (byte)(128 + wave * 127);
+                b = g = r = val;
+            }
+
+            bw.Write(b); bw.Write(g); bw.Write(r);
+        }
+        // Padding to 4-byte boundary
+        for (int p = 0; p < padding; p++) bw.Write((byte)0);
+    }
+
+    string outputPath = "test_image.bmp";
+    File.WriteAllBytes(outputPath, ms.ToArray());
+    Console.WriteLine($"  Creado: {outputPath} ({Utils.FormatearTamano(ms.Length)})");
+    Console.WriteLine($"  Estructura: 4 cuadrantes (gradiente, patrón, regiones, onda)");
+}
+
+// ============================================================
+//  DECODE PNG → PIXELES RAW → COMPRESIÓN
+// ============================================================
+static void DecodificarYComprimirPNG(string pngFile)
+{
+    if (!File.Exists(pngFile))
+    {
+        Console.WriteLine($"  ERROR: No se encontró: {pngFile}");
+        return;
+    }
+
+    Console.WriteLine("╔══════════════════════════════════════════════════╗");
+    Console.WriteLine("║   Compresor3D - Modo Decode PNG → Pixeles Raw   ║");
+    Console.WriteLine("╚══════════════════════════════════════════════════╝");
+    Console.WriteLine();
+
+    // Cargar PNG y extraer pixeles raw
+    using var image = SixLabors.ImageSharp.Image.Load<SixLabors.ImageSharp.PixelFormats.Rgba32>(pngFile);
+    int w = image.Width, h = image.Height;
+    byte[] pixeles = new byte[w * h * 4]; // RGBA
+
+    image.CopyPixelDataTo(pixeles);
+
+    Console.WriteLine($"  PNG: {w}x{h} = {Utils.FormatearTamano(pixeles.Length)} pixeles raw (RGBA)");
+    Console.WriteLine($"  Archivo original: {Utils.FormatearTamano(new FileInfo(pngFile).Length)}");
+    Console.WriteLine();
+
+    // Crear header con metadatos (formato: width:4, height:4, pixelformat:4, data)
+    byte[] pixelesConHeader = new byte[12 + pixeles.Length];
+    BitConverter.GetBytes(w).CopyTo(pixelesConHeader, 0);
+    BitConverter.GetBytes(h).CopyTo(pixelesConHeader, 4);
+    BitConverter.GetBytes(0).CopyTo(pixelesConHeader, 8); // 0 = RGBA
+    pixeles.CopyTo(pixelesConHeader, 12);
+
+    // Comprimir los pixeles raw con el pipeline normal
+    Console.WriteLine("Comprimiendo pixeles raw...");
+    var sw = Stopwatch.StartNew();
+    var cubo = new Cubo3D(1, 1, pixelesConHeader.Length, pixelesConHeader);
+    var resultado = cubo.ComprimirFunciones(out long compressedSize, direccion: 1);
+    sw.Stop();
+
+    string cuboFile = Path.ChangeExtension(pngFile, ".cubo");
+    File.WriteAllBytes(cuboFile, resultado);
+
+    Console.WriteLine();
+    Console.WriteLine($"  Pixeles raw: {Utils.FormatearTamano(pixelesConHeader.Length)}");
+    Console.WriteLine($"  Comprimido:  {Utils.FormatearTamano(compressedSize)}");
+    double ratio = (double)compressedSize / pixelesConHeader.Length * 100;
+    Console.WriteLine($"  Ratio:       {ratio:F1}%");
+    Console.WriteLine($"  Tiempo:      {Utils.FormatearTiempo(sw.Elapsed)}");
+
+    // Verificar round-trip
+    Console.WriteLine();
+    Console.WriteLine("Verificando round-trip...");
+    byte[] descomprimido = Cubo3D.Descomprimir(resultado, 1, 1, pixelesConHeader.Length);
+    
+    // Verificar header
+    int w2 = BitConverter.ToInt32(descomprimido, 0);
+    int h2 = BitConverter.ToInt32(descomprimido, 4);
+    int pf = BitConverter.ToInt32(descomprimido, 8);
+    
+    if (w2 == w && h2 == h && pf == 0)
+    {
+        Console.WriteLine($"  ✓ Header correcto: {w2}x{h2}, formato {pf}");
+        
+        // Extraer pixeles
+        byte[] pixelesRecuperados = new byte[descomprimido.Length - 12];
+        Array.Copy(descomprimido, 12, pixelesRecuperados, 0, pixelesRecuperados.Length);
+        
+        // Verificar SHA-256
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        string hashOriginal = Convert.ToHexString(sha.ComputeHash(pixeles));
+        string hashRecuperado = Convert.ToHexString(sha.ComputeHash(pixelesRecuperados));
+        
+        if (hashOriginal == hashRecuperado)
+        {
+            Console.WriteLine($"  ✓ SHA-256 match: round-trip perfecto!");
+            
+            // Re-encodificar como PNG
+            Console.WriteLine();
+            Console.WriteLine("Re-encodificando como PNG...");
+            using var image2 = SixLabors.ImageSharp.Image.LoadPixelData<SixLabors.ImageSharp.PixelFormats.Rgba32>(
+                pixelesRecuperados, w, h);
+            
+            string outputPng = Path.ChangeExtension(pngFile, ".reconstruido.png");
+            image2.SaveAsPng(outputPng);
+            Console.WriteLine($"  ✓ PNG reconstruido: {outputPng} ({Utils.FormatearTamano(new FileInfo(outputPng).Length)})");
+        }
+        else
+        {
+            Console.WriteLine($"  ✗ SHA-256 MISMATCH!");
+            Console.WriteLine($"    Original:    {hashOriginal[..16]}...");
+            Console.WriteLine($"    Recuperado:  {hashRecuperado[..16]}...");
+        }
+    }
+    else
+    {
+        Console.WriteLine($"  ✗ Header incorrecto: esperado {w}x{h}/0, obtenido {w2}x{h2}/{pf}");
+    }
+
+    // Comparar con comprimir el PNG directamente
+    Console.WriteLine();
+    Console.WriteLine("Comparación con PNG directo:");
+    sw.Restart();
+    byte[] pngData = File.ReadAllBytes(pngFile);
+    var cubo3 = new Cubo3D(1, 1, pngData.Length, pngData);
+    var resultado3 = cubo3.ComprimirFunciones(out long compressedSize3, direccion: 1);
+    sw.Stop();
+
+    Console.WriteLine($"  PNG directo:     {Utils.FormatearTamano(new FileInfo(pngFile).Length)} → {Utils.FormatearTamano(compressedSize3)} ({(double)compressedSize3 / new FileInfo(pngFile).Length * 100:F1}%)");
+    Console.WriteLine($"  PNG→Raw→Compr:   {Utils.FormatearTamano(pixelesConHeader.Length)} → {Utils.FormatearTamano(compressedSize)} ({ratio:F1}%)");
+    Console.WriteLine($"  Mejora:          {((double)compressedSize3 / compressedSize):F1}x mejor con decode");
 }

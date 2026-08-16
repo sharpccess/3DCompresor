@@ -86,6 +86,16 @@ public static class Utils
                     descomprimir = true;
                     break;
 
+                case "--generar-test":
+                    archivo = "--generar-test";
+                    break;
+
+                case "--decode-png":
+                    archivo = "--decode-png";
+                    if (i + 1 < args.Length && !args[i + 1].StartsWith('-'))
+                        archivo = "--decode-png:" + args[++i].Trim('"');
+                    break;
+
                 case "--min-dim":
                     if (i + 1 < args.Length && int.TryParse(args[++i], out int min))
                         minDim = min;

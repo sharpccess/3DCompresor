@@ -34,6 +34,7 @@ public static class Transformaciones
     public const byte T_RLE = 0x09;         // Run-Length Encoding post-BWT
     public const byte T_BITPLANE = 0x0A;    // Prisma Virtual: descomposición en planos de bits
     public const byte T_DIFFUSION = 0x0B;   // Difusión de Calor: smooth + residual interleaved
+    public const byte T_PREDICT2D = 0x0C;   // Filtro predictivo 2D: diferencias con vecinos (arriba, izquierda, diagonal)
 
     /// <summary>
     /// Pipeline completo: prueba múltiples combinaciones de transformaciones
@@ -172,6 +173,42 @@ public static class Transformaciones
         // Necesita un formato especial para almacenar smooth + residual.
         // Por ahora desactivada — delta encoding ya hace algo similar.
 
+        // ═══ FILTRO PREDICTIVO 2D: explota correlación espacial ═══
+        // Como un PNG internamente, pero aplicado a los bytes directamente.
+        // El predictor Paeth usa vecinos (arriba, izquierda, diagonal) para predecir cada byte.
+        // Los residuos se concentran cerca de cero → menor entropía.
+        if (datos.Length >= 256)
+        {
+            // Intentar varias anchuras de imagen (ancho típico de imagen)
+            foreach (int ancho in new[] { 64, 128, 256, 512, 1024 })
+            {
+                if (datos.Length < ancho * 2) break;
+                int alto = datos.Length / ancho;
+                if (alto < 2) continue;
+
+                // Predict2D
+                byte[] pred = AplicarPredict2D(datos, ancho, alto);
+                double ent = CalcularEntropia(pred);
+                candidatos.Add((pred, new byte[] { T_PREDICT2D }, ent));
+
+                // Predict2D + MTF
+                byte[] mtf = AplicarMTF(pred);
+                candidatos.Add((mtf, new byte[] { T_PREDICT2D, T_MTF }, CalcularEntropia(mtf)));
+
+                // Predict2D + Delta
+                byte[] delta = AplicarDelta(pred);
+                candidatos.Add((delta, new byte[] { T_PREDICT2D, T_DELTA }, CalcularEntropia(delta)));
+
+                // Predict2D + BWT (si cabe)
+                if (datos.Length <= 4096)
+                {
+                    byte[] bwt = AplicarBWT(pred, out _);
+                    byte[] bwtMtf = AplicarMTF(bwt);
+                    candidatos.Add((bwtMtf, new byte[] { T_PREDICT2D, T_BWT, T_MTF }, CalcularEntropia(bwtMtf)));
+                }
+            }
+        }
+
         // Elegir el que tenga menor entropía
         int mejorIdx = 0;
         double mejorEnt = entropiaOriginal;
@@ -195,7 +232,20 @@ public static class Transformaciones
         byte[] current = datos;
         for (int i = transformIds.Length - 1; i >= 0; i--)
         {
-            current = transformIds[i] switch
+            byte t = transformIds[i];
+            
+            // T_PREDICT2D lee el ancho de los primeros 4 bytes del data transformado
+            if (t == T_PREDICT2D)
+            {
+                if (current.Length < 4)
+                    throw new InvalidDataException("T_PREDICT2D requiere header de 4 bytes");
+                int ancho = current[0] | (current[1] << 8) | (current[2] << 16) | (current[3] << 24);
+                int alto = current.Length / ancho;
+                current = RevertirPredict2D(current, ancho, alto);
+                continue;
+            }
+            
+            current = t switch
             {
                 T_NONE => current,
                 T_DELTA => RevertirDelta(current),
@@ -209,7 +259,7 @@ public static class Transformaciones
                 T_RLE => RevertirRLE(current),
                 T_BITPLANE => RevertirBitPlane(current),
                 T_DIFFUSION => RevertirDifusion(current),
-                _ => throw new InvalidDataException($"Transformación desconocida: 0x{transformIds[i]:X2}")
+                _ => throw new InvalidDataException($"Transformación desconocida: 0x{t:X2}")
             };
         }
         return current;
@@ -751,5 +801,134 @@ public static class Transformaciones
         int ceros = 0;
         for (int i = 0; i < data.Length; i++) if (data[i] == 0) ceros++;
         return (double)ceros / data.Length;
+    }
+
+    // ==================== FILTRO PREDICTIVO 2D ====================
+
+    /// <summary>
+    /// Filtro predictivo 2D. Para cada pixel, calcula el residuo respecto al predictor Paeth.
+    /// El predictor usa los vecinos: izquierda, arriba, diagonal.
+    /// 
+    /// NO cambia el tamaño del output (mismo número de bytes).
+    /// Los residuos se concentran cerca de cero (distribución Laplaciana),
+    /// lo que reduce drásticamente la entropía para datos con correlación espacial.
+    /// 
+    /// Formato de salida: mismo tamaño que entrada, solo residuos.
+    /// Los primeros bytes contienen el ancho (4 bytes LE) para la reversa.
+    /// </summary>
+    public static byte[] AplicarPredict2D(byte[] data, int ancho, int alto)
+    {
+        int n = Math.Min(ancho * alto, data.Length);
+        
+        // Output: mismo tamaño, solo residuos
+        byte[] result = new byte[data.Length];
+        
+        // Guardar ancho en los primeros 4 bytes (para la reversa)
+        result[0] = (byte)(ancho & 0xFF);
+        result[1] = (byte)((ancho >> 8) & 0xFF);
+        result[2] = (byte)((ancho >> 16) & 0xFF);
+        result[3] = (byte)((ancho >> 24) & 0xFF);
+
+        for (int y = 0; y < alto; y++)
+        {
+            for (int x = 0; x < ancho; x++)
+            {
+                int idx = y * ancho + x;
+                if (idx >= n) break;
+                if (idx < 4) continue; // Reservado para header
+                
+                byte actual = data[idx];
+                byte pred;
+
+                if (x == 0 && y == 0)
+                {
+                    pred = 0;
+                }
+                else if (y == 0)
+                {
+                    // Primera fila: solo izquierda
+                    pred = data[idx - 1];
+                }
+                else if (x == 0)
+                {
+                    // Primera columna: solo arriba
+                    pred = data[idx - ancho];
+                }
+                else
+                {
+                    // Caso general: predictor Paeth
+                    byte arriba = data[idx - ancho];
+                    byte izquierda = data[idx - 1];
+                    byte diagonal = data[idx - ancho - 1];
+                    pred = PaethPredictor(izquierda, arriba, diagonal);
+                }
+
+                result[idx] = (byte)(actual - pred);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>Revierte el filtro predictivo 2D.</summary>
+    public static byte[] RevertirPredict2D(byte[] data, int ancho, int alto)
+    {
+        int n = Math.Min(ancho * alto, data.Length);
+        byte[] result = new byte[data.Length];
+
+        for (int y = 0; y < alto; y++)
+        {
+            for (int x = 0; x < ancho; x++)
+            {
+                int idx = y * ancho + x;
+                if (idx >= n) break;
+                if (idx < 4) 
+                {
+                    result[idx] = data[idx]; // Header
+                    continue;
+                }
+                
+                byte residuo = data[idx];
+                byte pred;
+
+                if (x == 0 && y == 0)
+                {
+                    pred = 0;
+                }
+                else if (y == 0)
+                {
+                    pred = result[idx - 1];
+                }
+                else if (x == 0)
+                {
+                    pred = result[idx - ancho];
+                }
+                else
+                {
+                    byte arriba = result[idx - ancho];
+                    byte izquierda = result[idx - 1];
+                    byte diagonal = result[idx - ancho - 1];
+                    pred = PaethPredictor(izquierda, arriba, diagonal);
+                }
+
+                result[idx] = (byte)(pred + residuo);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>Predictor Paeth (igual que PNG). Elige el vecino más cercano al valor predicho.</summary>
+    private static byte PaethPredictor(byte a, byte b, byte c)
+    {
+        // a = izquierda, b = arriba, c = diagonal
+        int p = a + b - c;
+        int pa = Math.Abs(p - a);
+        int pb = Math.Abs(p - b);
+        int pc = Math.Abs(p - c);
+        
+        if (pa <= pb && pa <= pc) return a;
+        if (pb <= pc) return b;
+        return c;
     }
 }
