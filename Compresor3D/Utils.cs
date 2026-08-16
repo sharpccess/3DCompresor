@@ -54,14 +54,17 @@ public static class Utils
     /// Parsea los argumentos de línea de comandos.
     /// Soporta: --file, --descomprimir, --min-dim, --max-dim, --step
     /// También soporta drag & drop (archivo como primer argumento sin flag).
+    /// Soporta --batch para múltiples archivos (shell extension).
     /// </summary>
-    public static (string? archivo, bool descomprimir, int minDim, int maxDim, int step) ParsearArgumentos(string[] args)
+    public static (string? archivo, bool descomprimir, int minDim, int maxDim, int step, string[] batchFiles) ParsearArgumentos(string[] args)
     {
         string? archivo = null;
         bool descomprimir = false;
         int minDim = 1;
         int maxDim = int.MaxValue;
         int step = 1;
+        var batchFiles = new List<string>();
+        bool isBatch = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -84,6 +87,26 @@ public static class Utils
                 case "--descomprimir":
                 case "-d":
                     descomprimir = true;
+                    break;
+
+                case "--batch":
+                case "-b":
+                    isBatch = true;
+                    // Recoger todos los archivos restantes
+                    while (i + 1 < args.Length)
+                    {
+                        string nextArg = args[++i].Trim('"');
+                        if (Directory.Exists(nextArg))
+                        {
+                            // Si es carpeta, añadir todos los archivos recursivamente
+                            foreach (var f in Directory.GetFiles(nextArg, "*.*", SearchOption.AllDirectories))
+                                batchFiles.Add(f);
+                        }
+                        else
+                        {
+                            batchFiles.Add(nextArg);
+                        }
+                    }
                     break;
 
                 case "--generar-test":
@@ -125,7 +148,7 @@ public static class Utils
             }
         }
 
-        return (archivo, descomprimir, minDim, maxDim, step);
+        return (archivo, descomprimir, minDim, maxDim, step, isBatch ? batchFiles.ToArray() : Array.Empty<string>());
     }
 
     // ==================== FORMATEO ====================

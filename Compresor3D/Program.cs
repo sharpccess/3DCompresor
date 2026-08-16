@@ -10,12 +10,19 @@ using SixLabors.ImageSharp.PixelFormats;
 //  en cubos 3D y escaneo de repeticiones RLE en 3 direcciones.
 // ============================================================
 
-var (archivo, descomprimir, minDim, maxDim, step) = Utils.ParsearArgumentos(args);
+var (archivo, descomprimir, minDim, maxDim, step, batchFiles) = Utils.ParsearArgumentos(args);
 
 // Mostrar ayuda si no hay argumentos
-if (archivo == null)
+if (archivo == null && batchFiles.Length == 0)
 {
     MostrarAyuda();
+    return;
+}
+
+// ---- Comando: BATCH (múltiples archivos desde shell extension) ----
+if (batchFiles.Length > 0)
+{
+    EjecutarBatch(batchFiles);
     return;
 }
 
@@ -109,6 +116,86 @@ static void EjecutarDescompresion(string archivo)
     {
         Console.WriteLine($"  ERROR al descomprimir: {ex.Message}");
     }
+}
+
+static void EjecutarBatch(string[] archivos)
+{
+    Console.WriteLine("╔══════════════════════════════════════════════════╗");
+    Console.WriteLine("║          Compressor3D - Compresión por lotes    ║");
+    Console.WriteLine("╚══════════════════════════════════════════════════╝");
+    Console.WriteLine();
+    Console.WriteLine($"  Procesando {archivos.Length} archivos...");
+    Console.WriteLine();
+
+    int exitosos = 0, fallidos = 0;
+    long totalOriginal = 0, totalComprimido = 0;
+
+    for (int i = 0; i < archivos.Length; i++)
+    {
+        string ruta = archivos[i];
+        string nombre = Path.GetFileName(ruta);
+
+        if (!File.Exists(ruta))
+        {
+            Console.WriteLine($"  [{i + 1}/{archivos.Length}] ✗ {nombre} - No encontrado");
+            fallidos++;
+            continue;
+        }
+
+        try
+        {
+            byte[] datos = File.ReadAllBytes(ruta);
+            long tamOriginal = datos.Length;
+            totalOriginal += tamOriginal;
+
+            // Elegir método según tipo de archivo
+            string ext = Path.GetExtension(ruta).ToLower();
+            bool esTexto = ext is ".txt" or ".csv" or ".log" or ".json" or ".xml" or ".md" or ".html" or ".css" or ".js" or ".cs" or ".py";
+
+            byte[] comprimido;
+            string metodo;
+
+            if (esTexto && datos.Length < 5 * 1024 * 1024) // PAQ1 solo para archivos < 5MB
+            {
+                comprimido = CompresorPAQ.Comprimir(datos);
+                metodo = "PAQ1";
+            }
+            else
+            {
+                var cubo = new Cubo3D(1, 1, datos.Length, datos);
+                comprimido = cubo.ComprimirFunciones(out _, direccion: 1);
+                metodo = "BWT+Zstd";
+            }
+
+            // Guardar
+            string rutaSalida = ruta + ".cubo";
+            string nombreOriginal = Path.GetFileName(ruta);
+            Compresor3DEngine.GuardarCubo(rutaSalida, nombreOriginal, 1, 1, datos.Length, tamOriginal, comprimido);
+
+            long tamComprimido = new FileInfo(rutaSalida).Length;
+            totalComprimido += tamComprimido;
+            double ratio = (double)tamComprimido / tamOriginal * 100;
+
+            Console.WriteLine($"  [{i + 1}/{archivos.Length}] ✓ {nombre} ({Utils.FormatearTamano(tamOriginal)} → {Utils.FormatearTamano(tamComprimido)}, {ratio:F1}%) [{metodo}]");
+            exitosos++;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  [{i + 1}/{archivos.Length}] ✗ {nombre} - Error: {ex.Message}");
+            fallidos++;
+        }
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"  Resumen: {exitosos} exitosos, {fallidos} fallidos");
+    if (totalOriginal > 0)
+    {
+        double ratioTotal = (double)totalComprimido / totalOriginal * 100;
+        Console.WriteLine($"  Total: {Utils.FormatearTamano(totalOriginal)} → {Utils.FormatearTamano(totalComprimido)} ({ratioTotal:F1}%)");
+    }
+    Console.WriteLine();
+    Console.WriteLine("  Pulsa cualquier tecla para salir...");
+    Console.ReadKey();
 }
 
 static void EjecutarCompresion(string archivo, int minDim, int maxDim, int step)
