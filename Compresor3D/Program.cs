@@ -137,18 +137,14 @@ static void EjecutarCompresion(string archivo, int minDim, int maxDim, int step)
     Console.WriteLine($"  Comprimiendo archivo completo con estas dimensiones...");
 
     var swComp = Stopwatch.StartNew();
-    var (datosComprimidos, tamanoComprimido, direccion, totalLineas, lineasUnicas, usaDedup) = Compresor3DEngine.Comprimir(
+    var (datosComprimidos, tamanoComprimido, direccion, totalLineas, lineasUnicas, metodo) = Compresor3DEngine.Comprimir(
         datos, mejor.Ancho, mejor.Alto, mejor.Profundidad);
     swComp.Stop();
 
     double ratio = tamanoOriginal > 0 ? (1.0 - (double)tamanoComprimido / tamanoOriginal) * 100 : 0;
-    double dedupRatio = totalLineas > 0 ? (double)lineasUnicas / totalLineas * 100 : 100;
     string[] dirNombres = { "X", "Y", "Z" };
     Console.WriteLine($"  Dirección de escaneo: {dirNombres[direccion]}");
-    if (usaDedup)
-        Console.WriteLine($"  Deduplicación: {lineasUnicas:n0} líneas únicas de {totalLineas:n0} ({dedupRatio:F1}%)");
-    else
-        Console.WriteLine($"  Modo: PackBits directo (dedup no conviene para estas dimensiones)");
+    Console.WriteLine($"  Método de compresión: {metodo}");
     Console.WriteLine($"  Tamaño comprimido: {Utils.FormatearTamano(tamanoComprimido)} (ratio: {ratio:F1}%)");
     Console.WriteLine($"  Tiempo de compresión: {Utils.FormatearTiempo(swComp.Elapsed)}");
 

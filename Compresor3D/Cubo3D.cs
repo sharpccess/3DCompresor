@@ -305,12 +305,225 @@ public sealed class Cubo3D
         return ms.ToArray();
     }
 
+    // ==================== COMPRESIÓN LZ77 ====================
+
+    /// <summary>
+    /// Comprime con LZ77 las líneas concatenadas en la dirección dada.
+    /// Las líneas se tratan como un stream continuo, permitiendo matches entre líneas.
+    /// El arreglo 3D puede alinear patrones que en 1D están dispersos.
+    /// 
+    /// Formato simple con type bytes:
+    ///   [0x40|dir: 1 byte]
+    ///   [totalLineas: int32]
+    ///   [lineLen: int32]
+    ///   [Stream LZ77: items...]
+    ///     literal: [0x00][byte]
+    ///     match:   [0x01][dist_lo][dist_hi][length]
+    /// </summary>
+    public byte[] ComprimirLZ77(out long compressedSize, int direccion)
+    {
+        int sliceSize = Ancho * Alto;
+
+        int lineLen = direccion switch { 0 => Ancho, 1 => Alto, 2 => Profundidad, _ => throw new ArgumentException() };
+        int totalLines = direccion switch { 0 => Alto * Profundidad, 1 => Ancho * Profundidad, 2 => Ancho * Alto, _ => throw new ArgumentException() };
+
+        // Construir stream concatenando todas las líneas en esta dirección
+        byte[] data = new byte[totalLines * lineLen];
+        int pos = 0;
+        for (int li = 0; li < totalLines; li++)
+        {
+            int start = direccion switch
+            {
+                0 => (li % Alto) * Ancho + (li / Alto) * sliceSize,
+                1 => (li % Ancho) + (li / Ancho) * sliceSize,
+                2 => (li % Ancho) + (li / Ancho) * Ancho,
+                _ => 0
+            };
+            int stride = direccion switch { 0 => 1, 1 => Ancho, 2 => sliceSize, _ => 1 };
+            for (int j = 0; j < lineLen; j++)
+                data[pos++] = _flat[start + j * stride];
+        }
+
+        // LZ77 con hash table
+        const int MIN_MATCH = 3;
+        const int MAX_MATCH = 255;
+        const int WINDOW = 65535;
+        const int HASH_SIZE = 65536;
+
+        var hashTable = new int[HASH_SIZE];
+        Array.Fill(hashTable, -1);
+
+        int n = data.Length;
+
+        // Buffer de salida: worst case = header(13) + n * 2 (cada byte como literal: type + data)
+        byte[] buf = new byte[13 + n * 2];
+        int wp = 0;
+
+        // Cabecera
+        buf[wp++] = (byte)(0x40 | direccion);
+        buf[wp++] = (byte)totalLines; buf[wp++] = (byte)(totalLines >> 8);
+        buf[wp++] = (byte)(totalLines >> 16); buf[wp++] = (byte)(totalLines >> 24);
+        buf[wp++] = (byte)lineLen; buf[wp++] = (byte)(lineLen >> 8);
+        buf[wp++] = (byte)(lineLen >> 16); buf[wp++] = (byte)(lineLen >> 24);
+        // totalItems al final (después de los datos)
+
+        int i = 0;
+        int totalItems = 0;
+
+        while (i < n)
+        {
+            // Hash de 3 bytes
+            int h = (i + 2 < n)
+                ? (data[i] ^ (data[i + 1] << 4) ^ (data[i + 2] << 8)) & (HASH_SIZE - 1)
+                : data[i] & (HASH_SIZE - 1);
+
+            int matchPos = hashTable[h];
+            hashTable[h] = i;
+
+            int bestLen = 0;
+            int bestDist = 0;
+
+            if (matchPos >= 0 && matchPos < i && i - matchPos <= WINDOW)
+            {
+                int maxLen = Math.Min(MAX_MATCH, n - i);
+                while (bestLen < maxLen && data[matchPos + bestLen] == data[i + bestLen])
+                    bestLen++;
+
+                if (bestLen >= MIN_MATCH)
+                {
+                    bestDist = i - matchPos;
+                }
+            }
+
+            if (bestLen >= MIN_MATCH)
+            {
+                // Match
+                buf[wp++] = 1; // type = match
+                buf[wp++] = (byte)(bestDist & 0xFF);
+                buf[wp++] = (byte)(bestDist >> 8);
+                buf[wp++] = (byte)bestLen;
+                i += bestLen;
+            }
+            else
+            {
+                // Literal
+                buf[wp++] = 0; // type = literal
+                buf[wp++] = data[i];
+                i++;
+            }
+
+            totalItems++;
+        }
+
+        // Escribir totalItems al final
+        buf[wp++] = (byte)totalItems;
+        buf[wp++] = (byte)(totalItems >> 8);
+        buf[wp++] = (byte)(totalItems >> 16);
+        buf[wp++] = (byte)(totalItems >> 24);
+
+        compressedSize = wp;
+        byte[] result = new byte[wp];
+        Buffer.BlockCopy(buf, 0, result, 0, wp);
+        return result;
+    }
+
+    /// <summary>Descomprime formato LZ77 simple.</summary>
+    private static byte[] DescomprimirLZ77(MemoryStream ms, byte dir, int ancho, int alto, int profundidad)
+    {
+        byte[] flat = new byte[ancho * alto * profundidad];
+        int sliceSize = ancho * alto;
+
+        int totalLines = ReadInt32(ms);
+        int lineLen = ReadInt32(ms);
+        int streamLen = totalLines * lineLen;
+
+        // Leer todos los datos restantes para extraer totalItems del final
+        int remaining_bytes = (int)(ms.Length - ms.Position);
+        byte[] allData = new byte[remaining_bytes];
+        int offset = 0;
+        while (offset < remaining_bytes)
+        {
+            int read = ms.Read(allData, offset, remaining_bytes - offset);
+            if (read <= 0) throw new InvalidDataException("Datos LZ77 truncados.");
+            offset += read;
+        }
+
+        // Los últimos 4 bytes son totalItems
+        int totalItems = allData[remaining_bytes - 4]
+            | (allData[remaining_bytes - 3] << 8)
+            | (allData[remaining_bytes - 2] << 16)
+            | (allData[remaining_bytes - 1] << 24);
+
+        // Descomprimir stream LZ77
+        byte[] stream = new byte[streamLen];
+        int outPos = 0;
+        int rp = 0; // read position en allData
+        int dataLen = remaining_bytes - 4; // sin los 4 bytes de totalItems
+
+        while (outPos < streamLen && rp < dataLen)
+        {
+            int type = allData[rp++];
+            if (type == 1) // match
+            {
+                if (rp + 2 > dataLen) throw new InvalidDataException("Match LZ77 truncado.");
+                int dist = allData[rp] | (allData[rp + 1] << 8);
+                int length = allData[rp + 2];
+                rp += 3;
+
+                int srcPos = outPos - dist;
+                if (srcPos < 0) throw new InvalidDataException($"LZ77 match inválido: dist={dist} > outPos={outPos}");
+                int remaining = streamLen - outPos;
+                if (length > remaining) length = remaining;
+                for (int j = 0; j < length; j++)
+                    stream[outPos++] = stream[srcPos + j];
+            }
+            else // literal
+            {
+                if (rp >= dataLen) throw new InvalidDataException("Literal LZ77 truncado.");
+                stream[outPos++] = allData[rp++];
+            }
+        }
+
+        // Reconstruir cubo desde el stream descomprimido
+        int sPos = 0;
+        for (int li = 0; li < totalLines; li++)
+        {
+            switch (dir)
+            {
+                case 0:
+                    {
+                        int y = li % alto, z = li / alto;
+                        Buffer.BlockCopy(stream, sPos, flat, y * ancho + z * sliceSize, lineLen);
+                    }
+                    break;
+                case 1:
+                    {
+                        int x = li % ancho, z = li / ancho;
+                        int baseIdx = x + z * sliceSize;
+                        for (int y = 0; y < lineLen; y++) flat[baseIdx + y * ancho] = stream[sPos + y];
+                    }
+                    break;
+                case 2:
+                    {
+                        int x = li % ancho, y = li / ancho;
+                        int baseIdx = x + y * ancho;
+                        for (int z = 0; z < lineLen; z++) flat[baseIdx + z * sliceSize] = stream[sPos + z];
+                    }
+                    break;
+            }
+            sPos += lineLen;
+        }
+
+        return flat;
+    }
+
     // ==================== DESCOMPRESIÓN ====================
 
     /// <summary>
-    /// Descomprime datos producidos por Comprimir() o ComprimirPackBitsDirecto().
+    /// Descomprime datos producidos por Comprimir(), ComprimirPackBitsDirecto() o ComprimirLZ77().
     /// Detecta automáticamente el formato por el primer byte:
     ///   - 0x00-0x02: formato deduplicación
+    ///   - 0x40-0x42: formato LZ77
     ///   - 0x80-0x82: formato PackBits directo
     /// </summary>
     public static byte[] Descomprimir(byte[] compressedData, int ancho, int alto, int profundidad)
@@ -321,6 +534,8 @@ public sealed class Cubo3D
 
         if (firstByte >= 0x80)
             return DescomprimirPackBitsDirecto(ms, (byte)(firstByte & 0x7F), ancho, alto, profundidad);
+        else if (firstByte >= 0x40)
+            return DescomprimirLZ77(ms, (byte)(firstByte & 0x3F), ancho, alto, profundidad);
         else
             return DescomprimirDedup(ms, (byte)firstByte, ancho, alto, profundidad);
     }
