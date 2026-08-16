@@ -5,6 +5,7 @@ using System.Linq;
 using MathNet.Numerics;
 using NWaves.Transforms;
 using NWaves.Transforms.Wavelets;
+using ZstdSharp;
 
 namespace Formulas3D;
 
@@ -473,6 +474,7 @@ public static class MotorCompresion
     public const byte MARKER_DCT = 0x56;
     public const byte MARKER_WAVELET = 0x57;
     public const byte MARKER_RAW = 0x58;
+    public const byte MARKER_ZSTD = 0x59;
 
     /// <summary>
     /// Comprime los datos. Modo lossless: solo Matching Pursuit.
@@ -499,6 +501,7 @@ public static class MotorCompresion
             MARKER_DCT => DescomprimirDCT(compressedData),
             MARKER_WAVELET => DescomprimirWavelet(compressedData),
             MARKER_RAW => DescomprimirRaw(compressedData),
+            MARKER_ZSTD => DescomprimirZstd(compressedData),
             _ => throw new InvalidDataException($"Marker desconocido: 0x{marker:X2}")
         };
     }
@@ -513,6 +516,7 @@ public static class MotorCompresion
             MARKER_DCT => "DCT (transformada coseno, estilo JPEG)",
             MARKER_WAVELET => "Wavelets (Daubechies db4, estilo JPEG2000)",
             MARKER_RAW => "Raw (sin comprimir)",
+            MARKER_ZSTD => "Zstandard (ZstdSharp)",
             _ => $"Desconocido (0x{compressedData[0]:X2})"
         };
     }
@@ -778,6 +782,37 @@ public static class MotorCompresion
         byte[] output = new byte[len];
         ms.Read(output, 0, len);
         return output;
+    }
+
+    // =====================================================================
+    //  SECCIÓN 4b: ZSTANDARD (ZstdSharp — compresor de primer mundo)
+    // =====================================================================
+
+    /// <summary>Comprime con Zstandard (nivel 15 — balance ratio/velocidad).</summary>
+    public static byte[] ComprimirZstd(byte[] data, int level = 15)
+    {
+        using var compressor = new Compressor(level);
+        var compressed = compressor.Wrap(data);
+        
+        using var ms = new MemoryStream();
+        ms.WriteByte(MARKER_ZSTD);
+        WriteI32(ms, data.Length);
+        ms.Write(compressed.ToArray(), 0, compressed.ToArray().Length);
+        return ms.ToArray();
+    }
+
+    static byte[] DescomprimirZstd(byte[] data)
+    {
+        using var ms = new MemoryStream(data);
+        ms.ReadByte(); // marker
+        int origLen = ReadI32(ms);
+        int compLen = (int)(ms.Length - ms.Position);
+        byte[] compressed = new byte[compLen];
+        ms.Read(compressed, 0, compLen);
+        
+        using var decompressor = new Decompressor();
+        var result = decompressor.Unwrap(compressed);
+        return result.ToArray();
     }
 
     // =====================================================================

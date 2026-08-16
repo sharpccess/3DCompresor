@@ -55,6 +55,20 @@
         "net8.0": {
           "framework": "net8.0",
           "targetAlias": "net8.0",
+          "dependencies": {
+            "MathNet.Numerics": {
+              "target": "Package",
+              "version": "[5.0.0, )"
+            },
+            "NWaves": {
+              "target": "Package",
+              "version": "[0.9.6, )"
+            },
+            "ZstdSharp.Port": {
+              "target": "Package",
+              "version": "[0.8.8, )"
+            }
+          },
           "imports": [
             "net461",
             "net462",

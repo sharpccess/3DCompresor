@@ -257,6 +257,24 @@ public static class Compresor3DEngine
         if (metodosACostosos.Count == 0)
             Console.WriteLine($"  Clasificador predice datos incompresibles (entropía alta). Solo PackBits/Dedup.");
 
+        // === Multi-segmento adaptativo: dividir el pastel y aplicar el mejor método a cada tramo ===
+        if (datosLen >= 2048) // solo vale la pena en datos con cierto tamaño
+        {
+            Console.WriteLine($"  Probando Multi-segmento adaptativo (segmentos de 1024 bytes)...");
+            for (int dir = 0; dir < 3; dir++)
+            {
+                byte[] multiData = cubo.ComprimirFunciones(out long multiSize, dir);
+                Console.WriteLine($"    {nombres[dir]}: {Utils.FormatearTamano(multiSize)}");
+                if (multiSize < mejorSize)
+                {
+                    mejorComprimido = multiData; mejorSize = multiSize; mejorDir = dir;
+                    mejorTotal = dir switch { 0 => totalX, 1 => totalY, 2 => totalZ };
+                    mejorUnicas = dir switch { 0 => (int)unicasX, 1 => (int)unicasY, 2 => (int)unicasZ };
+                    mejorMetodo = $"Multi-seg {nombres[dir]}";
+                }
+            }
+        }
+
         Console.WriteLine($"\n  >>> Ganador: {mejorMetodo} ({Utils.FormatearTamano(mejorSize)})");
 
         return (mejorComprimido, mejorSize, mejorDir, mejorTotal, mejorUnicas, mejorMetodo);

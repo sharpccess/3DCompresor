@@ -649,7 +649,7 @@ public sealed class Cubo3D
     ///     tipo 0x01 = Matching Pursuit (MotorCompresion)
     ///     tipo 0x02 = Raw (sin comprimir)
     /// </summary>
-    public byte[] ComprimirFunciones(out long compressedSize, int direccion, int tamanoSegmento = 1024)
+    public byte[] ComprimirFunciones(out long compressedSize, int direccion, int tamanoSegmento = 4096)
     {
         int sliceSize = Ancho * Alto;
 
@@ -705,31 +705,38 @@ public sealed class Cubo3D
             byte[] segmento = new byte[len];
             Buffer.BlockCopy(data, start, segmento, 0, len);
 
-            // Clasificar segmento en múltiples niveles
-            var clasif = Clasificador.Clasificar(segmento);
+            // ═══ FASE 1: Transformaciones para reducir entropía (efecto "CD-ROM") ═══
+            var (transformed, transformIds, entropyReduction) =
+                Transformaciones.MejorarEntropia(segmento);
 
-            // Elegir método según clasificación
-            byte[] compressed;
-            byte tipoSegmento;
+            // ═══ FASE 2: Probar TODOS los compresores, elegir el mejor ═══
+            // Esto es el "bazar de compresores" del usuario: cada segmento
+            // se comprime con lo que mejor le funcione.
+            var candidatos = new List<byte[]>();
 
-            if (clasif.metodo == Clasificador.Metodo.Raw ||
-                clasif.metodo == Clasificador.Metodo.PackBits ||
-                clasif.metodo == Clasificador.Metodo.Dedup)
+            // Raw (baseline)
+            candidatos.Add(MotorCompresion.ComprimirRaw(transformed));
+
+            // Zstandard (el compresor de primer mundo)
+            candidatos.Add(MotorCompresion.ComprimirZstd(transformed));
+
+            // Matching Pursuit (funciones + microcódigo)
+            candidatos.Add(MotorCompresion.ComprimirStream(transformed));
+
+            // Elegir el más pequeño
+            byte[] compressed = candidatos[0];
+            for (int c = 1; c < candidatos.Count; c++)
             {
-                // Datos incompresibles o sin estructura → raw
-                compressed = MotorCompresion.ComprimirRaw(segmento);
-                tipoSegmento = 0x02;
-            }
-            else
-            {
-                // Datos con estructura → Matching Pursuit (funciones)
-                compressed = MotorCompresion.ComprimirStream(segmento);
-                tipoSegmento = 0x01;
+                if (candidatos[c].Length < compressed.Length)
+                    compressed = candidatos[c];
             }
 
-            ms.WriteByte(tipoSegmento);
+            // Formato: [tipo][origLen][compLen][numTransforms][transformIds...][compressed]
+            ms.WriteByte(0x01); // tipo 0x01 = comprimido (todos usan MotorCompresion.DescomprimirStream)
             WriteInt32(ms, len);
             WriteInt32(ms, compressed.Length);
+            ms.WriteByte((byte)transformIds.Length);
+            ms.Write(transformIds, 0, transformIds.Length);
             ms.Write(compressed, 0, compressed.Length);
         }
 
@@ -809,12 +816,22 @@ public sealed class Cubo3D
             int tipo = ms.ReadByte();
             int origLen = ReadInt32(ms);
             int compLen = ReadInt32(ms);
+            
+            // Leer transformaciones aplicadas
+            int numTransforms = ms.ReadByte();
+            byte[] transformIds = new byte[numTransforms];
+            ms.Read(transformIds, 0, numTransforms);
+            
             byte[] compressed = new byte[compLen];
             ms.Read(compressed, 0, compLen);
 
-            // Ambos tipos se descomprimen vía MotorCompresion (detecta raw por marker 0x58)
+            // Descomprimir
             byte[] decompressed = MotorCompresion.DescomprimirStream(compressed);
-            output.Write(decompressed, 0, decompressed.Length);
+            
+            // Revertir transformaciones
+            byte[] restored = Transformaciones.Revertir(decompressed, transformIds);
+            
+            output.Write(restored, 0, restored.Length);
         }
 
         return output.ToArray();
