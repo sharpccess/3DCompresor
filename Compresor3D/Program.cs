@@ -69,7 +69,7 @@ EjecutarCompresion(archivo, minDim, maxDim, step);
 static void MostrarAyuda()
 {
     Console.WriteLine("╔══════════════════════════════════════════════════╗");
-    Console.WriteLine("║          Compresor3D - Compresión 3D RLE        ║");
+    Console.WriteLine("║          Compressor3D - Compresión 3D           ║");
     Console.WriteLine("╚══════════════════════════════════════════════════╝");
     Console.WriteLine();
     Console.WriteLine("Uso: Compresor3D [opciones]");

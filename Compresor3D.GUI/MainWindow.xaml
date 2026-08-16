@@ -1,7 +1,7 @@
 ﻿<Window x:Class="Compresor3D.GUI.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Compresor3D - Compresión Inteligente" 
+        Title="Compressor3D - Compresión Inteligente" 
         Height="600" Width="800"
         MinHeight="500" MinWidth="700"
         WindowStartupLocation="CenterScreen"
@@ -59,7 +59,7 @@
         
         <!-- Header -->
         <StackPanel Grid.Row="0" Margin="0,0,0,20">
-            <TextBlock Text="Compresor3D" 
+            <TextBlock Text="Compressor3D" 
                        FontSize="28" 
                        FontWeight="Bold" 
                        Foreground="#007ACC"/>
