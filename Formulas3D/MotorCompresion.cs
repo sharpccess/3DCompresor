@@ -472,6 +472,7 @@ public static class MotorCompresion
     public const byte MARKER_MATCHING_PURSUIT = 0x55;
     public const byte MARKER_DCT = 0x56;
     public const byte MARKER_WAVELET = 0x57;
+    public const byte MARKER_RAW = 0x58;
 
     /// <summary>
     /// Comprime los datos. Modo lossless: solo Matching Pursuit.
@@ -497,6 +498,7 @@ public static class MotorCompresion
             MARKER_MATCHING_PURSUIT => DescomprimirMatchingPursuit(compressedData),
             MARKER_DCT => DescomprimirDCT(compressedData),
             MARKER_WAVELET => DescomprimirWavelet(compressedData),
+            MARKER_RAW => DescomprimirRaw(compressedData),
             _ => throw new InvalidDataException($"Marker desconocido: 0x{marker:X2}")
         };
     }
@@ -510,6 +512,7 @@ public static class MotorCompresion
             MARKER_MATCHING_PURSUIT => "Matching Pursuit (funciones+microcódigo)",
             MARKER_DCT => "DCT (transformada coseno, estilo JPEG)",
             MARKER_WAVELET => "Wavelets (Daubechies db4, estilo JPEG2000)",
+            MARKER_RAW => "Raw (sin comprimir)",
             _ => $"Desconocido (0x{compressedData[0]:X2})"
         };
     }
@@ -751,6 +754,30 @@ public static class MotorCompresion
             }
         }
         return output.ToArray();
+    }
+
+    // =====================================================================
+    //  SECCIÓN 4b: STREAM RAW (sin comprimir, para segmentos incompresibles)
+    // =====================================================================
+
+    /// <summary>Comprime como raw: solo marker + longitud + datos sin transformar.</summary>
+    public static byte[] ComprimirRaw(byte[] data)
+    {
+        using var ms = new MemoryStream();
+        ms.WriteByte(MARKER_RAW);
+        WriteI32(ms, data.Length);
+        ms.Write(data, 0, data.Length);
+        return ms.ToArray();
+    }
+
+    static byte[] DescomprimirRaw(byte[] data)
+    {
+        using var ms = new MemoryStream(data);
+        ms.ReadByte(); // marker
+        int len = ReadI32(ms);
+        byte[] output = new byte[len];
+        ms.Read(output, 0, len);
+        return output;
     }
 
     // =====================================================================

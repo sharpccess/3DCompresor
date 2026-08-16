@@ -630,26 +630,33 @@ public sealed class Cubo3D
         return flat;
     }
 
-    // ==================== COMPRESIÓN FUNCIONES UNIVERSALES ====================
+    // ==================== COMPRESIÓN MULTI-SEGMENTO ADAPTATIVA ====================
 
     /// <summary>
-    /// Comprime con descomposición funcional: analiza el stream y lo expresa
-    /// como combinación de funciones universales indexadas + residual raw.
+    /// Comprime con segmentación adaptativa: divide el stream en bloques,
+    /// clasifica cada uno en múltiples niveles de observación, y comprime
+    /// cada segmento con el método óptimo según su naturaleza.
     /// 
     /// Formato:
-    ///   [0x55|dir: 1 byte]
+    ///   [0x58|dir: 1 byte]          ← marker multi-segmento
     ///   [totalLineas: int32]
     ///   [lineLen: int32]
-    ///   [Stream FuncionesUniversales...]
+    ///   [Stream multi-segmento...]
+    /// 
+    /// Tipos de segmento dentro del stream:
+    ///   [numSegmentos: int32]
+    ///   { [tipo: 1 byte][origLen: int32][compLen: int32][compressed bytes] }...
+    ///     tipo 0x01 = Matching Pursuit (MotorCompresion)
+    ///     tipo 0x02 = Raw (sin comprimir)
     /// </summary>
-    public byte[] ComprimirFunciones(out long compressedSize, int direccion, int tamanoBloque = 1024)
+    public byte[] ComprimirFunciones(out long compressedSize, int direccion, int tamanoSegmento = 1024)
     {
         int sliceSize = Ancho * Alto;
 
         int lineLen = direccion switch { 0 => Ancho, 1 => Alto, 2 => Profundidad, _ => throw new ArgumentException() };
         int totalLines = direccion switch { 0 => Alto * Profundidad, 1 => Ancho * Profundidad, 2 => Ancho * Alto, _ => throw new ArgumentException() };
 
-        // Construir stream concatenando todas las líneas
+        // Construir stream 1D concatenando todas las líneas
         byte[] data = new byte[totalLines * lineLen];
         int pos = 0;
         for (int li = 0; li < totalLines; li++)
@@ -666,22 +673,71 @@ public sealed class Cubo3D
                 data[pos++] = _flat[start + j * stride];
         }
 
-        // Comprimir con Motor de Compresión unificado (funciones + microcódigo)
-        byte[] funcData = MotorCompresion.ComprimirStream(data, tamanoBloque);
+        // Comprimir con segmentación adaptativa
+        byte[] multiData = ComprimirStreamMultiSegmento(data, tamanoSegmento);
 
-        // Construir resultado con cabecera
+        // Construir resultado con cabecera Cubo3D
         using var ms = new MemoryStream();
-        ms.WriteByte((byte)(0x54 | direccion)); // marker 0x54-0x56 (bits bajos = dirección)
+        ms.WriteByte((byte)(0x58 | direccion)); // marker multi-segmento 0x58-0x5A
         WriteInt32(ms, totalLines);
         WriteInt32(ms, lineLen);
-        ms.Write(funcData, 0, funcData.Length);
+        ms.Write(multiData, 0, multiData.Length);
 
         compressedSize = ms.Length;
         return ms.ToArray();
     }
 
-    /// <summary>Descomprime formato Funciones Universales.</summary>
-    private static byte[] DescomprimirFunciones(MemoryStream ms, byte dir, int ancho, int alto, int profundidad)
+    /// <summary>
+    /// Comprime un stream dividiéndolo en segmentos y aplicando el método
+    /// óptimo a cada uno según el clasificador multi-nivel.
+    /// </summary>
+    static byte[] ComprimirStreamMultiSegmento(byte[] data, int tamanoSegmento)
+    {
+        using var ms = new MemoryStream();
+        int n = data.Length;
+        int numSegmentos = (n + tamanoSegmento - 1) / tamanoSegmento;
+        WriteInt32(ms, numSegmentos);
+
+        for (int s = 0; s < numSegmentos; s++)
+        {
+            int start = s * tamanoSegmento;
+            int len = Math.Min(tamanoSegmento, n - start);
+            byte[] segmento = new byte[len];
+            Buffer.BlockCopy(data, start, segmento, 0, len);
+
+            // Clasificar segmento en múltiples niveles
+            var clasif = Clasificador.Clasificar(segmento);
+
+            // Elegir método según clasificación
+            byte[] compressed;
+            byte tipoSegmento;
+
+            if (clasif.metodo == Clasificador.Metodo.Raw ||
+                clasif.metodo == Clasificador.Metodo.PackBits ||
+                clasif.metodo == Clasificador.Metodo.Dedup)
+            {
+                // Datos incompresibles o sin estructura → raw
+                compressed = MotorCompresion.ComprimirRaw(segmento);
+                tipoSegmento = 0x02;
+            }
+            else
+            {
+                // Datos con estructura → Matching Pursuit (funciones)
+                compressed = MotorCompresion.ComprimirStream(segmento);
+                tipoSegmento = 0x01;
+            }
+
+            ms.WriteByte(tipoSegmento);
+            WriteInt32(ms, len);
+            WriteInt32(ms, compressed.Length);
+            ms.Write(compressed, 0, compressed.Length);
+        }
+
+        return ms.ToArray();
+    }
+
+    /// <summary>Descomprime formato multi-segmento adaptativo.</summary>
+    private static byte[] DescomprimirMultiSegmento(MemoryStream ms, byte dir, int ancho, int alto, int profundidad)
     {
         byte[] flat = new byte[ancho * alto * profundidad];
         int sliceSize = ancho * alto;
@@ -690,23 +746,23 @@ public sealed class Cubo3D
         int lineLen = ReadInt32(ms);
         int streamLen = totalLines * lineLen;
 
-        // Leer el resto como datos FuncionesUniversales
+        // Leer datos multi-segmento
         int remaining = (int)(ms.Length - ms.Position);
-        byte[] funcData = new byte[remaining];
+        byte[] multiData = new byte[remaining];
         int offset = 0;
         while (offset < remaining)
         {
-            int read = ms.Read(funcData, offset, remaining - offset);
-            if (read <= 0) throw new InvalidDataException("Datos FuncionesUniversales truncados.");
+            int read = ms.Read(multiData, offset, remaining - offset);
+            if (read <= 0) throw new InvalidDataException("Datos multi-segmento truncados.");
             offset += read;
         }
 
-        // Descomprimir stream (funciones + microcódigo)
-        byte[] stream = MotorCompresion.DescomprimirStream(funcData);
+        // Descomprimir stream multi-segmento
+        byte[] stream = DescomprimirStreamMultiSegmento(multiData);
 
         if (stream.Length != streamLen)
             throw new InvalidDataException(
-                $"FuncionesUniversales: stream tiene {stream.Length} bytes, se esperaban {streamLen}");
+                $"Multi-segmento: stream tiene {stream.Length} bytes, se esperaban {streamLen}");
 
         // Reconstruir cubo
         int sPos = 0;
@@ -741,6 +797,29 @@ public sealed class Cubo3D
         return flat;
     }
 
+    /// <summary>Descomprime un stream multi-segmento leyendo cada segmento según su tipo.</summary>
+    static byte[] DescomprimirStreamMultiSegmento(byte[] data)
+    {
+        using var ms = new MemoryStream(data);
+        int numSegmentos = ReadInt32(ms);
+        using var output = new MemoryStream();
+
+        for (int s = 0; s < numSegmentos; s++)
+        {
+            int tipo = ms.ReadByte();
+            int origLen = ReadInt32(ms);
+            int compLen = ReadInt32(ms);
+            byte[] compressed = new byte[compLen];
+            ms.Read(compressed, 0, compLen);
+
+            // Ambos tipos se descomprimen vía MotorCompresion (detecta raw por marker 0x58)
+            byte[] decompressed = MotorCompresion.DescomprimirStream(compressed);
+            output.Write(decompressed, 0, decompressed.Length);
+        }
+
+        return output.ToArray();
+    }
+
     // ==================== DESCOMPRESIÓN ====================
 
     /// <summary>
@@ -760,8 +839,8 @@ public sealed class Cubo3D
 
         if (firstByte >= 0x80)
             return DescomprimirPackBitsDirecto(ms, (byte)(firstByte & 0x7F), ancho, alto, profundidad);
-        else if (firstByte >= 0x54)
-            return DescomprimirFunciones(ms, (byte)(firstByte & 0x03), ancho, alto, profundidad);
+        else if (firstByte >= 0x58)
+            return DescomprimirMultiSegmento(ms, (byte)(firstByte & 0x03), ancho, alto, profundidad);
         else if (firstByte >= 0x50)
             return DescomprimirMicroVM(ms, (byte)(firstByte & 0x03), ancho, alto, profundidad);
         else if (firstByte >= 0x40)
@@ -860,7 +939,7 @@ public sealed class Cubo3D
         return flat;
     }
 
-    // ==================== MÉTODOS AUXILIRES INTERNOS ====================
+    // ==================== MÉTODOS AUXILIARES INTERNOS ====================
 
     /// <summary>
     /// Cuenta runs RLE en una línea que comienza en startIdx, en la dirección dada.
