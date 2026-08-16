@@ -148,55 +148,157 @@ public sealed class Cubo3D
         return totalRuns;
     }
 
-    // ==================== COMPRESIÓN ====================
+    // ==================== DEDUPLICACIÓN DE LÍNEAS ====================
 
     /// <summary>
-    /// Comprime el cubo usando PackBits híbrido en una sola dirección (0=X, 1=Y, 2=Z).
-    /// PackBits escribe bytes literales sin expansión y solo comprime repeticiones (runs ≥ 3).
-    /// Formato del stream: [totalLíneas: int32] [dir: 1 byte] [PackBits] [dir] [PackBits] ...
+    /// Cuenta cuántas líneas ÚNICAS hay en la dirección dada.
+    /// Menos líneas únicas = más redundancia estructural = mejor compresión por deduplicación.
+    /// dir: 0 = X, 1 = Y, 2 = Z
+    /// </summary>
+    public int ContarLineasUnicas(int dir)
+    {
+        var uniques = new HashSet<byte[]>(ByteArrayComparer.Instance);
+        int sliceSize = Ancho * Alto;
+
+        switch (dir)
+        {
+            case 0: // X: Y*Z líneas de longitud Ancho
+                for (int z = 0; z < Profundidad; z++)
+                    for (int y = 0; y < Alto; y++)
+                    {
+                        byte[] line = new byte[Ancho];
+                        Buffer.BlockCopy(_flat, y * Ancho + z * sliceSize, line, 0, Ancho);
+                        uniques.Add(line);
+                    }
+                break;
+
+            case 1: // Y: X*Z líneas de longitud Alto
+                for (int z = 0; z < Profundidad; z++)
+                    for (int x = 0; x < Ancho; x++)
+                        uniques.Add(ReadLine(x + z * sliceSize, 1, Alto));
+                break;
+
+            case 2: // Z: X*Y líneas de longitud Profundidad
+                for (int y = 0; y < Alto; y++)
+                    for (int x = 0; x < Ancho; x++)
+                        uniques.Add(ReadLine(x + y * Ancho, 2, Profundidad));
+                break;
+        }
+
+        return uniques.Count;
+    }
+
+    /// <summary>
+    /// Devuelve (totalLineas, lineasUnicas, longitudLinea) para la dirección dada.
+    /// </summary>
+    public (int total, int unicas, int longitud) InfoLineas(int dir)
+    {
+        int total = dir switch { 0 => Alto * Profundidad, 1 => Ancho * Profundidad, 2 => Ancho * Alto };
+        int unicas = ContarLineasUnicas(dir);
+        int longitud = dir switch { 0 => Ancho, 1 => Alto, 2 => Profundidad };
+        return (total, unicas, longitud);
+    }
+
+    // ==================== COMPRESIÓN CON DEDUPLICACIÓN ====================
+
+    /// <summary>
+    /// Comprime el cubo usando deduplicación de líneas + PackBits.
+    /// 
+    /// Estrategia: en la dirección elegida, muchas líneas pueden ser idénticas.
+    /// En vez de almacenar cada línea, guardamos solo las ÚNICAS (comprimidas con PackBits)
+    /// y un mapa de índices que referencia cada línea original a su versión única.
+    /// 
+    /// Formato:
+    ///   [direccion: 1 byte]
+    ///   [totalLineas: int32]
+    ///   [lineasUnicas: int32]
+    ///   [longitudLinea: int32]
+    ///   [PackBits de cada línea única, concatenados]
+    ///   [Índices: totalLineas × int32]
     /// </summary>
     public byte[] Comprimir(out long compressedSize, int direccion = 0)
     {
         using var ms = new MemoryStream();
         int sliceSize = Ancho * Alto;
 
-        switch (direccion)
+        int lineLen = direccion switch { 0 => Ancho, 1 => Alto, 2 => Profundidad };
+        int totalLines = direccion switch { 0 => Alto * Profundidad, 1 => Ancho * Profundidad, 2 => Ancho * Alto };
+
+        // Paso 1: Recorrer todas las líneas, deduplicar y construir mapa de índices
+        var uniqueLines = new List<byte[]>();
+        var lineToIndex = new Dictionary<byte[], int>(ByteArrayComparer.Instance);
+        int[] indices = new int[totalLines];
+
+        for (int i = 0; i < totalLines; i++)
         {
-            case 0: // Dirección X: Y*Z líneas, cada una de longitud Ancho
-                WriteInt32(ms, Alto * Profundidad);
-                for (int z = 0; z < Profundidad; z++)
-                    for (int y = 0; y < Alto; y++)
-                    {
-                        int start = y * Ancho + z * sliceSize;
-                        ms.WriteByte(0); // dirección X
-                        PackBitsCompressToStream(ms, _flat, start, 1, Ancho);
-                    }
-                break;
+            byte[] line = direccion switch
+            {
+                0 => ReadLineContiguo((i % Alto) * Ancho + (i / Alto) * sliceSize, lineLen),
+                1 => ReadLine((i % Ancho) + (i / Ancho) * sliceSize, 1, lineLen),
+                2 => ReadLine((i % Ancho) + (i / Ancho) * Ancho, 2, lineLen),
+                _ => throw new ArgumentException()
+            };
 
-            case 1: // Dirección Y: X*Z líneas, cada una de longitud Alto
-                WriteInt32(ms, Ancho * Profundidad);
-                for (int z = 0; z < Profundidad; z++)
-                    for (int x = 0; x < Ancho; x++)
-                    {
-                        int start = x + z * sliceSize;
-                        ms.WriteByte(1); // dirección Y
-                        PackBitsCompressToStream(ms, _flat, start, Ancho, Alto);
-                    }
-                break;
+            if (!lineToIndex.TryGetValue(line, out int idx))
+            {
+                idx = uniqueLines.Count;
+                lineToIndex[line] = idx;
+                uniqueLines.Add(line);
+            }
+            indices[i] = idx;
+        }
 
-            case 2: // Dirección Z: X*Y líneas, cada una de longitud Profundidad
-                WriteInt32(ms, Ancho * Alto);
-                for (int y = 0; y < Alto; y++)
-                    for (int x = 0; x < Ancho; x++)
-                    {
-                        int start = x + y * Ancho;
-                        ms.WriteByte(2); // dirección Z
-                        PackBitsCompressToStream(ms, _flat, start, sliceSize, Profundidad);
-                    }
-                break;
+        // Paso 2: Escribir cabecera
+        ms.WriteByte((byte)direccion);
+        WriteInt32(ms, totalLines);
+        WriteInt32(ms, uniqueLines.Count);
+        WriteInt32(ms, lineLen);
 
-            default:
-                throw new ArgumentException($"Dirección inválida: {direccion}");
+        // Paso 3: Escribir líneas únicas comprimidas con PackBits
+        foreach (var ul in uniqueLines)
+        {
+            // Para líneas únicas, escribir directamente (son byte[] contiguos)
+            // Usamos PackBits para comprimir runs dentro de cada línea
+            PackBitsCompressBufferToStream(ms, ul);
+        }
+
+        // Paso 4: Escribir mapa de índices
+        foreach (int idx in indices)
+            WriteInt32(ms, idx);
+
+        compressedSize = ms.Length;
+        return ms.ToArray();
+    }
+
+    /// <summary>
+    /// Comprime con PackBits directo (sin deduplicación).
+    /// Formato: [0x80|dir: 1 byte] [totalLineas: int32] [lineLen: int32] [PackBits de cada línea]
+    /// Más eficiente que dedup cuando las líneas son cortas y hay pocos duplicados.
+    /// </summary>
+    public byte[] ComprimirPackBitsDirecto(out long compressedSize, int direccion)
+    {
+        using var ms = new MemoryStream();
+        int sliceSize = Ancho * Alto;
+
+        int lineLen = direccion switch { 0 => Ancho, 1 => Alto, 2 => Profundidad, _ => throw new ArgumentException() };
+        int totalLines = direccion switch { 0 => Alto * Profundidad, 1 => Ancho * Profundidad, 2 => Ancho * Alto, _ => throw new ArgumentException() };
+
+        // Marker de formato directo (0x80 | dir)
+        ms.WriteByte((byte)(0x80 | direccion));
+        WriteInt32(ms, totalLines);
+        WriteInt32(ms, lineLen);
+
+        for (int i = 0; i < totalLines; i++)
+        {
+            int start = direccion switch
+            {
+                0 => (i % Alto) * Ancho + (i / Alto) * sliceSize,
+                1 => (i % Ancho) + (i / Ancho) * sliceSize,
+                2 => (i % Ancho) + (i / Ancho) * Ancho,
+                _ => 0
+            };
+            int stride = direccion switch { 0 => 1, 1 => Ancho, 2 => sliceSize, _ => 1 };
+            PackBitsCompressToStream(ms, _flat, start, stride, lineLen);
         }
 
         compressedSize = ms.Length;
@@ -206,72 +308,110 @@ public sealed class Cubo3D
     // ==================== DESCOMPRESIÓN ====================
 
     /// <summary>
-    /// Descomprime datos producidos por Comprimir(), reconstruyendo el array plano original.
-    /// Usa contadores independientes por dirección para soportar cualquier mezcla de líneas.
+    /// Descomprime datos producidos por Comprimir() o ComprimirPackBitsDirecto().
+    /// Detecta automáticamente el formato por el primer byte:
+    ///   - 0x00-0x02: formato deduplicación
+    ///   - 0x80-0x82: formato PackBits directo
     /// </summary>
     public static byte[] Descomprimir(byte[] compressedData, int ancho, int alto, int profundidad)
+    {
+        using var ms = new MemoryStream(compressedData);
+        int firstByte = ms.ReadByte();
+        if (firstByte < 0) throw new InvalidDataException("Datos truncados.");
+
+        if (firstByte >= 0x80)
+            return DescomprimirPackBitsDirecto(ms, (byte)(firstByte & 0x7F), ancho, alto, profundidad);
+        else
+            return DescomprimirDedup(ms, (byte)firstByte, ancho, alto, profundidad);
+    }
+
+    /// <summary>Descomprime formato deduplicación.</summary>
+    private static byte[] DescomprimirDedup(MemoryStream ms, byte dir, int ancho, int alto, int profundidad)
     {
         byte[] flat = new byte[ancho * alto * profundidad];
         int sliceSize = ancho * alto;
 
-        // Contadores independientes por dirección (soporta formatos mixtos)
-        int xLineIdx = 0, yLineIdx = 0, zLineIdx = 0;
-
-        using var ms = new MemoryStream(compressedData);
         int totalLines = ReadInt32(ms);
+        int uniqueCount = ReadInt32(ms);
+        int lineLen = ReadInt32(ms);
 
+        // Leer y descomprimir líneas únicas
+        byte[][] uniqueLines = new byte[uniqueCount][];
+        for (int i = 0; i < uniqueCount; i++)
+            uniqueLines[i] = PackBitsDecompressFromStream(ms, lineLen);
+
+        // Leer mapa de índices
+        int[] indices = new int[totalLines];
+        for (int i = 0; i < totalLines; i++)
+            indices[i] = ReadInt32(ms);
+
+        // Reconstruir
         for (int i = 0; i < totalLines; i++)
         {
-            int dirByte = ms.ReadByte();
-            if (dirByte < 0) throw new InvalidDataException("Datos comprimidos truncados.");
-            byte dir = (byte)dirByte;
-
-            int lineLen = dir switch
-            {
-                0 => ancho,
-                1 => alto,
-                2 => profundidad,
-                _ => throw new InvalidDataException($"Dirección inválida: {dir}")
-            };
-
-            byte[] lineData = PackBitsDecompressFromStream(ms, lineLen);
-
+            byte[] lineData = uniqueLines[indices[i]];
             switch (dir)
             {
-                case 0: // Línea X: (0, y, z) → stride 1
+                case 0:
                     {
-                        int y = xLineIdx % alto;
-                        int z = xLineIdx / alto;
-                        int start = y * ancho + z * sliceSize;
-                        Buffer.BlockCopy(lineData, 0, flat, start, lineLen);
-                        xLineIdx++;
+                        int y = i % alto, z = i / alto;
+                        Buffer.BlockCopy(lineData, 0, flat, y * ancho + z * sliceSize, lineLen);
                     }
                     break;
-
-                case 1: // Línea Y: (x, 0, z) → stride ancho
+                case 1:
                     {
-                        int x = yLineIdx % ancho;
-                        int z = yLineIdx / ancho;
+                        int x = i % ancho, z = i / ancho;
                         int baseIdx = x + z * sliceSize;
-                        for (int y = 0; y < lineLen; y++)
-                            flat[baseIdx + y * ancho] = lineData[y];
-                        yLineIdx++;
+                        for (int y = 0; y < lineLen; y++) flat[baseIdx + y * ancho] = lineData[y];
                     }
                     break;
-
-                case 2: // Línea Z: (x, y, 0) → stride sliceSize
+                case 2:
                     {
-                        int x = zLineIdx % ancho;
-                        int y = zLineIdx / ancho;
+                        int x = i % ancho, y = i / ancho;
                         int baseIdx = x + y * ancho;
-                        for (int z = 0; z < lineLen; z++)
-                            flat[baseIdx + z * sliceSize] = lineData[z];
-                        zLineIdx++;
+                        for (int z = 0; z < lineLen; z++) flat[baseIdx + z * sliceSize] = lineData[z];
                     }
                     break;
             }
         }
+        return flat;
+    }
 
+    /// <summary>Descomprime formato PackBits directo.</summary>
+    private static byte[] DescomprimirPackBitsDirecto(MemoryStream ms, byte dir, int ancho, int alto, int profundidad)
+    {
+        byte[] flat = new byte[ancho * alto * profundidad];
+        int sliceSize = ancho * alto;
+
+        int totalLines = ReadInt32(ms);
+        int lineLen = ReadInt32(ms);
+
+        for (int i = 0; i < totalLines; i++)
+        {
+            byte[] lineData = PackBitsDecompressFromStream(ms, lineLen);
+            switch (dir)
+            {
+                case 0:
+                    {
+                        int y = i % alto, z = i / alto;
+                        Buffer.BlockCopy(lineData, 0, flat, y * ancho + z * sliceSize, lineLen);
+                    }
+                    break;
+                case 1:
+                    {
+                        int x = i % ancho, z = i / ancho;
+                        int baseIdx = x + z * sliceSize;
+                        for (int y = 0; y < lineLen; y++) flat[baseIdx + y * ancho] = lineData[y];
+                    }
+                    break;
+                case 2:
+                    {
+                        int x = i % ancho, y = i / ancho;
+                        int baseIdx = x + y * ancho;
+                        for (int z = 0; z < lineLen; z++) flat[baseIdx + z * sliceSize] = lineData[z];
+                    }
+                    break;
+            }
+        }
         return flat;
     }
 
@@ -355,7 +495,59 @@ public sealed class Cubo3D
         return line;
     }
 
+    /// <summary>
+    /// Lee una línea contigua del array plano (dirección X, stride=1).
+    /// </summary>
+    private byte[] ReadLineContiguo(int start, int length)
+    {
+        byte[] line = new byte[length];
+        Buffer.BlockCopy(_flat, start, line, 0, length);
+        return line;
+    }
+
     // ==================== PACKBITS HÍBRIDO ====================
+
+    /// <summary>
+    /// Comprime un buffer byte[] completo con PackBits y escribe al stream.
+    /// Versión simplificada para líneas ya extraídas (no necesita stride).
+    /// </summary>
+    private static void PackBitsCompressBufferToStream(MemoryStream output, byte[] data)
+    {
+        int length = data.Length;
+        if (length == 0) return;
+
+        int pos = 0;
+        while (pos < length)
+        {
+            int runLen = 1;
+            while (pos + runLen < length && data[pos + runLen] == data[pos] && runLen < 128)
+                runLen++;
+
+            if (runLen >= 3)
+            {
+                output.WriteByte((byte)(-(runLen - 1) & 0xFF));
+                output.WriteByte(data[pos]);
+                pos += runLen;
+            }
+            else
+            {
+                int litStart = pos;
+                pos++;
+                while (pos < length)
+                {
+                    int ahead = 1;
+                    while (pos + ahead < length && data[pos + ahead] == data[pos] && ahead < 128)
+                        ahead++;
+                    if (ahead >= 3) break;
+                    pos++;
+                    if (pos - litStart >= 128) break;
+                }
+                int litCount = pos - litStart;
+                output.WriteByte((byte)(litCount - 1));
+                output.Write(data, litStart, litCount);
+            }
+        }
+    }
 
     /// <summary>
     /// PackBits híbrido: escribe literales sin expansión y comprime solo runs ≥ 3.
@@ -487,5 +679,33 @@ public sealed class Cubo3D
         if (b0 < 0 || b1 < 0 || b2 < 0 || b3 < 0)
             throw new InvalidDataException("Datos truncados al leer entero.");
         return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+    }
+}
+
+/// <summary>
+/// Comparador de byte[] por contenido (para usar en HashSet/Dictionary).
+/// Usa StructuralComparisons para comparación y hash eficientes.
+/// </summary>
+internal sealed class ByteArrayComparer : IEqualityComparer<byte[]>
+{
+    public static readonly ByteArrayComparer Instance = new();
+
+    public bool Equals(byte[]? x, byte[]? y)
+    {
+        if (ReferenceEquals(x, y)) return true;
+        if (x == null || y == null) return false;
+        if (x.Length != y.Length) return false;
+        for (int i = 0; i < x.Length; i++)
+            if (x[i] != y[i]) return false;
+        return true;
+    }
+
+    public int GetHashCode(byte[] obj)
+    {
+        // FNV-1a: rápido y buena distribución
+        int hash = unchecked((int)2166136261);
+        for (int i = 0; i < obj.Length; i++)
+            hash = unchecked((hash ^ obj[i]) * 16777619);
+        return hash;
     }
 }

@@ -99,30 +99,75 @@ public static class Compresor3DEngine
     // ==================== COMPRESIÓN ====================
 
     /// <summary>
-    /// Comprime los datos completos usando las dimensiones ganadoras y la mejor dirección.
-    /// Determina cuál de las 3 direcciones (X, Y, Z) tiene menos runs RLE y usa solo esa.
-    /// Devuelve el byte[] comprimido, el tamaño real y la dirección usada.
+    /// Comprime los datos completos usando las dimensiones ganadoras.
+    /// Evalúa las 3 direcciones y elige la que produzca el .cubo más pequeño,
+    /// considerando tanto deduplicación de líneas como PackBits directo.
     /// </summary>
-    public static (byte[] compressedData, long compressedSize, int direccion) Comprimir(
+    public static (byte[] compressedData, long compressedSize, int direccion,
+        int totalLineas, int lineasUnicas, bool usaDedup) Comprimir(
         byte[] datos, int ancho, int alto, int profundidad)
     {
         var cubo = new Cubo3D(ancho, alto, profundidad, datos);
 
-        // Determinar la mejor dirección (la que tenga menos runs = mejor compresión)
-        long runsX = cubo.ContarRuns(0);
-        long runsY = cubo.ContarRuns(1);
-        long runsZ = cubo.ContarRuns(2);
-
-        int mejorDir = 0;
-        long mejorRuns = runsX;
-        if (runsY < mejorRuns) { mejorDir = 1; mejorRuns = runsY; }
-        if (runsZ < mejorRuns) { mejorDir = 2; mejorRuns = runsZ; }
+        var (totalX, unicasX, lenX) = cubo.InfoLineas(0);
+        var (totalY, unicasY, lenY) = cubo.InfoLineas(1);
+        var (totalZ, unicasZ, lenZ) = cubo.InfoLineas(2);
 
         string[] nombres = { "X", "Y", "Z" };
-        Console.WriteLine($"  Mejor dirección: {nombres[mejorDir]} (runs: {mejorRuns:n0})");
+        Console.WriteLine($"  Líneas únicas por dirección:");
+        Console.WriteLine($"    X: {unicasX:n0} / {totalX:n0} (long={lenX}, {(100.0 * unicasX / totalX):F1}% únicas)");
+        Console.WriteLine($"    Y: {unicasY:n0} / {totalY:n0} (long={lenY}, {(100.0 * unicasY / totalY):F1}% únicas)");
+        Console.WriteLine($"    Z: {unicasZ:n0} / {totalZ:n0} (long={lenZ}, {(100.0 * unicasZ / totalZ):F1}% únicas)");
 
-        byte[] compressed = cubo.Comprimir(out long size, mejorDir);
-        return (compressed, size, mejorDir);
+        // Estimar costo de cada opción:
+        // Dedup: uniqueLines * lineLen * ~0.9 (PackBits en únicas) + totalLines * 4 (índices)
+        // PackBits directo: totalLines * lineLen * ~0.9 (sin overhead de índices)
+        double packRatio = 0.95; // estimación de ratio PackBits para datos poco repetitivos
+        int datosLen = datos.Length;
+
+        double costoDedupX = unicasX * lenX * packRatio + totalX * 4.0;
+        double costoDedupY = unicasY * lenY * packRatio + totalY * 4.0;
+        double costoDedupZ = unicasZ * lenZ * packRatio + totalZ * 4.0;
+        double costoDirecto = datosLen * packRatio;
+
+        // Encontrar la mejor opción
+        int mejorDir = 0;
+        double mejorCosto = costoDedupX;
+        bool usaDedup = true;
+        int mejorTotal = totalX, mejorUnicas = (int)unicasX;
+
+        if (costoDedupY < mejorCosto) { mejorDir = 1; mejorCosto = costoDedupY; mejorTotal = totalY; mejorUnicas = (int)unicasY; }
+        if (costoDedupZ < mejorCosto) { mejorDir = 2; mejorCosto = costoDedupZ; mejorTotal = totalZ; mejorUnicas = (int)unicasZ; }
+        if (costoDirecto < mejorCosto) { usaDedup = false; mejorCosto = costoDirecto; }
+
+        if (usaDedup)
+            Console.WriteLine($"  Mejor: {nombres[mejorDir]} con deduplicación ({mejorUnicas:n0}/{mejorTotal:n0} únicas, costo est. {mejorCosto:n0} bytes)");
+        else
+            Console.WriteLine($"  Mejor: PackBits directo sin dedup (costo est. {mejorCosto:n0} bytes, dedup no conviene)");
+
+        byte[] compressed;
+        long size;
+        if (usaDedup)
+        {
+            compressed = cubo.Comprimir(out size, mejorDir);
+        }
+        else
+        {
+            // Fallback: PackBits directo sin dedup, usar dirección con menos runs
+            long runsX = cubo.ContarRuns(0);
+            long runsY = cubo.ContarRuns(1);
+            long runsZ = cubo.ContarRuns(2);
+            mejorDir = 0;
+            long mejorRuns = runsX;
+            if (runsY < mejorRuns) { mejorDir = 1; mejorRuns = runsY; }
+            if (runsZ < mejorRuns) { mejorDir = 2; mejorRuns = runsZ; }
+            mejorTotal = mejorDir switch { 0 => totalX, 1 => totalY, 2 => totalZ };
+            mejorUnicas = mejorTotal; // sin dedup, todas las líneas son "únicas"
+            Console.WriteLine($"  Dirección PackBits: {nombres[mejorDir]} (runs: {mejorRuns:n0})");
+            compressed = cubo.ComprimirPackBitsDirecto(out size, mejorDir);
+        }
+
+        return (compressed, size, mejorDir, mejorTotal, mejorUnicas, usaDedup);
     }
 
     // ==================== ARCHIVO .CUBO ====================
