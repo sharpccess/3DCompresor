@@ -151,55 +151,63 @@ public sealed class Cubo3D
     // ==================== COMPRESIÓN ====================
 
     /// <summary>
-    /// Comprime el cubo almacenando todas las líneas en las 3 direcciones con RLE.
-    /// Orden: primero todas las líneas X, luego Y, luego Z.
+    /// Comprime el cubo usando RLE en una sola dirección (0=X, 1=Y, 2=Z).
+    /// La dirección óptima se determina en el análisis (ContarRuns por dirección).
     /// Formato por línea: [dirección: 1 byte] [RLE: count, value, count, value, ...]
-    /// Las líneas X se leen directamente del array plano (son contiguas).
     /// </summary>
-    public byte[] Comprimir(out long compressedSize)
+    public byte[] Comprimir(out long compressedSize, int direccion = 0)
     {
         using var ms = new MemoryStream();
         int sliceSize = Ancho * Alto;
-        // Buffer reutilizable para RLE (tamaño máximo = 2 * longitud de línea)
         byte[] rleBuf = new byte[Math.Max(Math.Max(Ancho, Alto), Profundidad) * 2];
 
-        int xLineLen = Ancho, yLineLen = Alto, zLineLen = Profundidad;
-        int totalLines = Alto * Profundidad + Ancho * Profundidad + Ancho * Alto;
+        int totalLines;
+        switch (direccion)
+        {
+            case 0: // Dirección X: líneas a lo largo del eje X (Y*Z líneas)
+                totalLines = Alto * Profundidad;
+                WriteInt32(ms, totalLines);
+                for (int z = 0; z < Profundidad; z++)
+                    for (int y = 0; y < Alto; y++)
+                    {
+                        int start = y * Ancho + z * sliceSize; // (0, y, z)
+                        int rleLen = RleCompressBlock(_flat, start, Ancho, rleBuf);
+                        ms.WriteByte(0);
+                        ms.Write(rleBuf, 0, rleLen);
+                    }
+                break;
 
-        // Cabecera: total de líneas
-        WriteInt32(ms, totalLines);
+            case 1: // Dirección Y: líneas a lo largo del eje Y (X*Z líneas)
+                totalLines = Ancho * Profundidad;
+                WriteInt32(ms, totalLines);
+                for (int z = 0; z < Profundidad; z++)
+                    for (int x = 0; x < Ancho; x++)
+                    {
+                        int start = x + z * sliceSize; // (x, 0, z)
+                        var line = ReadLine(start, 1, Alto);
+                        int rleLen = RleCompressBlock(line, 0, line.Length, rleBuf);
+                        ms.WriteByte(1);
+                        ms.Write(rleBuf, 0, rleLen);
+                    }
+                break;
 
-        // --- Líneas X: Y=fijo, Z=fijo. Base = (0, y, z) = y*Ancho + z*sliceSize ---
-        for (int z = 0; z < Profundidad; z++)
-            for (int y = 0; y < Alto; y++)
-            {
-                int xStart = y * Ancho + z * sliceSize;
-                int rleLen = RleCompressBlock(_flat, xStart, xLineLen, rleBuf);
-                ms.WriteByte(0); // dirección X
-                ms.Write(rleBuf, 0, rleLen);
-            }
+            case 2: // Dirección Z: líneas a lo largo del eje Z (X*Y líneas)
+                totalLines = Ancho * Alto;
+                WriteInt32(ms, totalLines);
+                for (int y = 0; y < Alto; y++)
+                    for (int x = 0; x < Ancho; x++)
+                    {
+                        int start = x + y * Ancho; // (x, y, 0)
+                        var line = ReadLine(start, 2, Profundidad);
+                        int rleLen = RleCompressBlock(line, 0, line.Length, rleBuf);
+                        ms.WriteByte(2);
+                        ms.Write(rleBuf, 0, rleLen);
+                    }
+                break;
 
-        // --- Líneas Y: X=fijo, Z=fijo. Base = (x, 0, z) = x + z*sliceSize ---
-        for (int z = 0; z < Profundidad; z++)
-            for (int x = 0; x < Ancho; x++)
-            {
-                int yStart = x + z * sliceSize;
-                var line = ReadLine(yStart, 1, yLineLen);
-                int rleLen = RleCompressBlock(line, 0, line.Length, rleBuf);
-                ms.WriteByte(1); // dirección Y
-                ms.Write(rleBuf, 0, rleLen);
-            }
-
-        // --- Líneas Z: X=fijo, Y=fijo. Base = (x, y, 0) = x + y*Ancho ---
-        for (int y = 0; y < Alto; y++)
-            for (int x = 0; x < Ancho; x++)
-            {
-                int zStart = x + y * Ancho;  // (x, y, 0)
-                var line = ReadLine(zStart, 2, zLineLen);
-                int rleLen = RleCompressBlock(line, 0, line.Length, rleBuf);
-                ms.WriteByte(2); // dirección Z
-                ms.Write(rleBuf, 0, rleLen);
-            }
+            default:
+                throw new ArgumentException($"Dirección inválida: {direccion}");
+        }
 
         compressedSize = ms.Length;
         return ms.ToArray();

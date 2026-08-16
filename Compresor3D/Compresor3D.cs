@@ -99,15 +99,30 @@ public static class Compresor3DEngine
     // ==================== COMPRESIÓN ====================
 
     /// <summary>
-    /// Comprime los datos completos usando las dimensiones ganadoras.
-    /// Devuelve el byte[] comprimido y el tamaño real.
+    /// Comprime los datos completos usando las dimensiones ganadoras y la mejor dirección.
+    /// Determina cuál de las 3 direcciones (X, Y, Z) tiene menos runs RLE y usa solo esa.
+    /// Devuelve el byte[] comprimido, el tamaño real y la dirección usada.
     /// </summary>
-    public static (byte[] compressedData, long compressedSize) Comprimir(
+    public static (byte[] compressedData, long compressedSize, int direccion) Comprimir(
         byte[] datos, int ancho, int alto, int profundidad)
     {
         var cubo = new Cubo3D(ancho, alto, profundidad, datos);
-        byte[] compressed = cubo.Comprimir(out long size);
-        return (compressed, size);
+
+        // Determinar la mejor dirección (la que tenga menos runs = mejor compresión)
+        long runsX = cubo.ContarRuns(0);
+        long runsY = cubo.ContarRuns(1);
+        long runsZ = cubo.ContarRuns(2);
+
+        int mejorDir = 0;
+        long mejorRuns = runsX;
+        if (runsY < mejorRuns) { mejorDir = 1; mejorRuns = runsY; }
+        if (runsZ < mejorRuns) { mejorDir = 2; mejorRuns = runsZ; }
+
+        string[] nombres = { "X", "Y", "Z" };
+        Console.WriteLine($"  Mejor dirección: {nombres[mejorDir]} (runs: {mejorRuns:n0})");
+
+        byte[] compressed = cubo.Comprimir(out long size, mejorDir);
+        return (compressed, size, mejorDir);
     }
 
     // ==================== ARCHIVO .CUBO ====================

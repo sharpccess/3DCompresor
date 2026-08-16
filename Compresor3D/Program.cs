@@ -137,11 +137,13 @@ static void EjecutarCompresion(string archivo, int minDim, int maxDim, int step)
     Console.WriteLine($"  Comprimiendo archivo completo con estas dimensiones...");
 
     var swComp = Stopwatch.StartNew();
-    var (datosComprimidos, tamanoComprimido) = Compresor3DEngine.Comprimir(
+    var (datosComprimidos, tamanoComprimido, direccion) = Compresor3DEngine.Comprimir(
         datos, mejor.Ancho, mejor.Alto, mejor.Profundidad);
     swComp.Stop();
 
     double ratio = tamanoOriginal > 0 ? (1.0 - (double)tamanoComprimido / tamanoOriginal) * 100 : 0;
+    string[] dirNombres = { "X", "Y", "Z" };
+    Console.WriteLine($"  Dirección de escaneo: {dirNombres[direccion]}");
     Console.WriteLine($"  Tamaño comprimido: {Utils.FormatearTamano(tamanoComprimido)} (ratio: {ratio:F1}%)");
     Console.WriteLine($"  Tiempo de compresión: {Utils.FormatearTiempo(swComp.Elapsed)}");
 
