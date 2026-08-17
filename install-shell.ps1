@@ -15,6 +15,12 @@ if (-not (Test-Path $exePath)) {
     exit 1
 }
 
+$helperPath = Join-Path $PSScriptRoot "shell-helper.ps1"
+if (-not (Test-Path $helperPath)) {
+    Write-Host "ERROR: shell-helper.ps1 not found." -ForegroundColor Red
+    exit 1
+}
+
 Write-Host "Compressor3D Shell Extension Installer" -ForegroundColor Cyan
 Write-Host "======================================" -ForegroundColor Cyan
 Write-Host ""
@@ -32,13 +38,13 @@ if (-not $isAdmin) {
 # ---- COMPRESS entries ----
 Write-Host "Creating COMPRESS context menu entries..." -ForegroundColor Green
 
-# Compress selected files
+# Compress selected files (uses helper to accumulate multiple selections)
 $fileCompPath = "Registry::HKEY_CLASSES_ROOT\*\shell\Compressor3D.Compress"
 New-Item -Path $fileCompPath -Force | Out-Null
 Set-ItemProperty -Path $fileCompPath -Name "(Default)" -Value "Compress with Compressor3D"
 Set-ItemProperty -Path $fileCompPath -Name "Icon" -Value $exePath
 New-Item -Path "$fileCompPath\command" -Force | Out-Null
-Set-ItemProperty -Path "$fileCompPath\command" -Name "(Default)" -Value "`"$exePath`" --batch `"%1`""
+Set-ItemProperty -Path "$fileCompPath\command" -Name "(Default)" -Value "pwsh.exe -ExecutionPolicy Bypass -File `"$helperPath`" -FilePath `"%1`""
 
 # Compress folder
 $dirCompPath = "Registry::HKEY_CLASSES_ROOT\Directory\shell\Compressor3D.Compress"
