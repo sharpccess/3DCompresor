@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Compresor3D.GUI/Compresor3D.GUI.csproj" />
+  <Project Path="Compresor3D/Compresor3D.csproj" />
+  <Project Path="Formulas3D/Formulas3D.csproj" />
+</Solution>

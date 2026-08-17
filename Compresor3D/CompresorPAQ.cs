@@ -300,6 +300,108 @@ public static class CompresorPAQ
         }
     }
     
+    /// <summary>
+    /// Modelo de contexto 2D espacial para imágenes.
+    /// Usa los píxeles vecinos (izquierda, arriba, diagonal) como contexto.
+    /// </summary>
+    private class SpatialModel2D
+    {
+        private int width;
+        private int contextBits;
+        private int tableSize;
+        private byte[,] counts;
+        
+        public SpatialModel2D(int width, int contextBits = 12)
+        {
+            this.width = width;
+            this.contextBits = contextBits;
+            tableSize = 1 << contextBits;
+            counts = new byte[tableSize, 2];
+            
+            for (int i = 0; i < tableSize; i++)
+            {
+                counts[i, 0] = 1;
+                counts[i, 1] = 1;
+            }
+        }
+        
+        /// <summary>Calcula el contexto 2D basado en vecinos (izquierda, arriba, diagonal).</summary>
+        public int GetContext(byte[] data, int index, int bitPosition)
+        {
+            int x = index % width;
+            int y = index / width;
+            
+            int context = 0;
+            
+            // Vecino izquierdo (mismo bit)
+            if (x > 0)
+            {
+                int leftByte = data[index - 1];
+                int leftBit = (leftByte >> bitPosition) & 1;
+                context = (context << 1) | leftBit;
+            }
+            else
+            {
+                context <<= 1;
+            }
+            
+            // Vecino arriba (mismo bit)
+            if (y > 0)
+            {
+                int upByte = data[index - width];
+                int upBit = (upByte >> bitPosition) & 1;
+                context = (context << 1) | upBit;
+            }
+            else
+            {
+                context <<= 1;
+            }
+            
+            // Vecino diagonal (arriba-izquierda)
+            if (x > 0 && y > 0)
+            {
+                int diagByte = data[index - width - 1];
+                int diagBit = (diagByte >> bitPosition) & 1;
+                context = (context << 1) | diagBit;
+            }
+            else
+            {
+                context <<= 1;
+            }
+            
+            // Bits superiores del pixel actual (contexto local)
+            int currentByte = data[index];
+            for (int b = 7; b > bitPosition; b--)
+            {
+                context = (context << 1) | ((currentByte >> b) & 1);
+            }
+            
+            return context & (tableSize - 1);
+        }
+        
+        public (uint p0, uint p1) Predict(int context)
+        {
+            int ctx = context & (tableSize - 1);
+            return ((uint)counts[ctx, 0], (uint)counts[ctx, 1]);
+        }
+        
+        public void Update(int context, int bit)
+        {
+            int ctx = context & (tableSize - 1);
+            
+            if (counts[ctx, bit] < MAX_COUNT)
+            {
+                counts[ctx, bit]++;
+            }
+            
+            int otherBit = 1 - bit;
+            if (counts[ctx, otherBit] > 0)
+            {
+                counts[ctx, otherBit] = (byte)(counts[ctx, otherBit] / 2 + 1);
+            }
+        }
+    }
+    
     // ==================== COMPRESIÓN ====================
     
     /// <summary>Comprime datos usando Context Mixing (PAQ1-style).</summary>
@@ -417,6 +519,145 @@ public static class CompresorPAQ
                 }
                 
                 // Actualizar contexto
+                context = ((context << 1) | b) & 0xFFFFF;
+            }
+            
+            result[i] = (byte)byteVal;
+        }
+        
+        return result;
+    }
+    
+    // ==================== COMPRESIÓN CON MODELO 2D ====================
+    
+    /// <summary>Comprime datos usando Context Mixing + Modelo 2D espacial (para imágenes).</summary>
+    public static byte[] ComprimirCon2D(byte[] data, int width)
+    {
+        using var ms = new MemoryStream();
+        using var bw = new BinaryWriter(ms);
+        
+        // Header: marker + tamaño original + ancho
+        bw.Write((byte)0x71); // Marker PAQ2D
+        bw.Write(data.Length);
+        bw.Write(width);
+        
+        // Inicializar modelos 1D (orden 0 a 3)
+        var models = new ContextModel[4];
+        for (int i = 0; i < 4; i++)
+        {
+            models[i] = new ContextModel(i * 4);
+        }
+        
+        // Inicializar modelo 2D
+        var model2D = new SpatialModel2D(width, 12);
+        
+        var encoder = new ArithmeticEncoder(ms);
+        
+        int context = 0;
+        
+        for (int i = 0; i < data.Length; i++)
+        {
+            for (int bit = 7; bit >= 0; bit--)
+            {
+                int b = (data[i] >> bit) & 1;
+                
+                // Mezclar predicciones de modelos 1D
+                ulong totalP0 = 0, totalP1 = 0;
+                for (int m = 0; m < 4; m++)
+                {
+                    ulong weight = (ulong)(m + 1) * (ulong)(m + 1);
+                    var (p0, p1) = models[m].Predict(context);
+                    totalP0 += weight * (ulong)p0;
+                    totalP1 += weight * (ulong)p1;
+                }
+                
+                // Añadir predicción del modelo 2D (peso alto)
+                int ctx2D = model2D.GetContext(data, i, bit);
+                var (p02d, p12d) = model2D.Predict(ctx2D);
+                totalP0 += 16UL * (ulong)p02d; // Peso alto para 2D
+                totalP1 += 16UL * (ulong)p12d;
+                
+                if (totalP0 > uint.MaxValue) totalP0 = uint.MaxValue;
+                if (totalP1 > uint.MaxValue) totalP1 = uint.MaxValue;
+                
+                encoder.EncodeBit((uint)totalP0, (uint)totalP1, b);
+                
+                // Actualizar modelos
+                for (int m = 0; m < 4; m++)
+                {
+                    models[m].Update(context, b);
+                }
+                model2D.Update(ctx2D, b);
+                
+                context = ((context << 1) | b) & 0xFFFFF;
+            }
+        }
+        
+        encoder.Flush();
+        return ms.ToArray();
+    }
+    
+    /// <summary>Descomprime datos comprimidos con ComprimirCon2D.</summary>
+    public static byte[] DescomprimirCon2D(byte[] data)
+    {
+        using var ms = new MemoryStream(data);
+        using var br = new BinaryReader(ms);
+        
+        byte marker = br.ReadByte();
+        if (marker != 0x71)
+            throw new Exception("Marker inválido para PAQ2D");
+        
+        int originalSize = br.ReadInt32();
+        int width = br.ReadInt32();
+        
+        byte[] compressed = br.ReadBytes(data.Length - 9);
+        
+        using var compressedStream = new MemoryStream(compressed);
+        var decoder = new ArithmeticDecoder(compressedStream);
+        
+        var models = new ContextModel[4];
+        for (int i = 0; i < 4; i++)
+        {
+            models[i] = new ContextModel(i * 4);
+        }
+        
+        var model2D = new SpatialModel2D(width, 12);
+        
+        byte[] result = new byte[originalSize];
+        int context = 0;
+        
+        for (int i = 0; i < originalSize; i++)
+        {
+            int byteVal = 0;
+            
+            for (int bit = 7; bit >= 0; bit--)
+            {
+                ulong totalP0 = 0, totalP1 = 0;
+                for (int m = 0; m < 4; m++)
+                {
+                    ulong weight = (ulong)(m + 1) * (ulong)(m + 1);
+                    var (p0, p1) = models[m].Predict(context);
+                    totalP0 += weight * (ulong)p0;
+                    totalP1 += weight * (ulong)p1;
+                }
+                
+                int ctx2D = model2D.GetContext(result, i, bit);
+                var (p02d, p12d) = model2D.Predict(ctx2D);
+                totalP0 += 16UL * (ulong)p02d;
+                totalP1 += 16UL * (ulong)p12d;
+                
+                if (totalP0 > uint.MaxValue) totalP0 = uint.MaxValue;
+                if (totalP1 > uint.MaxValue) totalP1 = uint.MaxValue;
+                
+                int b = decoder.DecodeBit((uint)totalP0, (uint)totalP1);
+                byteVal = (byteVal << 1) | b;
+                
+                for (int m = 0; m < 4; m++)
+                {
+                    models[m].Update(context, b);
+                }
+                model2D.Update(ctx2D, b);
+                
                 context = ((context << 1) | b) & 0xFFFFF;
             }
             
