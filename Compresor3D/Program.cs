@@ -53,6 +53,13 @@ if (archivo != null && archivo.StartsWith("--decode-png"))
     return;
 }
 
+// ---- Comando: TEST CONTAINER (round-trip multi-archivo) ----
+if (archivo == "--test-container")
+{
+    TestContainer();
+    return;
+}
+
 // ---- Comando: TEST PAQ1 (comparar con ZIP) ----
 if (archivo != null && archivo.StartsWith("--test-paq"))
 {
@@ -127,75 +134,90 @@ static void EjecutarBatch(string[] archivos)
     Console.WriteLine($"  Procesando {archivos.Length} archivos...");
     Console.WriteLine();
 
-    int exitosos = 0, fallidos = 0;
-    long totalOriginal = 0, totalComprimido = 0;
+    // Recopilar archivos válidos
+    var archivosDatos = new Dictionary<string, byte[]>();
+    long totalOriginal = 0;
 
-    for (int i = 0; i < archivos.Length; i++)
+    foreach (var ruta in archivos)
     {
-        string ruta = archivos[i];
         string nombre = Path.GetFileName(ruta);
-
         if (!File.Exists(ruta))
         {
-            Console.WriteLine($"  [{i + 1}/{archivos.Length}] ✗ {nombre} - No encontrado");
-            fallidos++;
+            Console.WriteLine($"  ✗ {nombre} - No encontrado");
             continue;
         }
 
         try
         {
             byte[] datos = File.ReadAllBytes(ruta);
-            long tamOriginal = datos.Length;
-            totalOriginal += tamOriginal;
-
-            // Elegir método según tipo de archivo
-            string ext = Path.GetExtension(ruta).ToLower();
-            bool esTexto = ext is ".txt" or ".csv" or ".log" or ".json" or ".xml" or ".md" or ".html" or ".css" or ".js" or ".cs" or ".py";
-
-            byte[] comprimido;
-            string metodo;
-
-            if (esTexto && datos.Length < 5 * 1024 * 1024) // PAQ1 solo para archivos < 5MB
-            {
-                comprimido = CompresorPAQ.Comprimir(datos);
-                metodo = "PAQ1";
-            }
-            else
-            {
-                var cubo = new Cubo3D(1, 1, datos.Length, datos);
-                comprimido = cubo.ComprimirFunciones(out _, direccion: 1);
-                metodo = "BWT+Zstd";
-            }
-
-            // Guardar
-            string rutaSalida = ruta + ".cubo";
-            string nombreOriginal = Path.GetFileName(ruta);
-            Compresor3DEngine.GuardarCubo(rutaSalida, nombreOriginal, 1, 1, datos.Length, tamOriginal, comprimido);
-
-            long tamComprimido = new FileInfo(rutaSalida).Length;
-            totalComprimido += tamComprimido;
-            double ratio = (double)tamComprimido / tamOriginal * 100;
-
-            Console.WriteLine($"  [{i + 1}/{archivos.Length}] ✓ {nombre} ({Utils.FormatearTamano(tamOriginal)} → {Utils.FormatearTamano(tamComprimido)}, {ratio:F1}%) [{metodo}]");
-            exitosos++;
+            archivosDatos[nombre] = datos;
+            totalOriginal += datos.Length;
+            Console.WriteLine($"  + {nombre} ({Utils.FormatearTamano(datos.Length)})");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"  [{i + 1}/{archivos.Length}] ✗ {nombre} - Error: {ex.Message}");
-            fallidos++;
+            Console.WriteLine($"  ✗ {nombre} - Error: {ex.Message}");
         }
     }
 
-    Console.WriteLine();
-    Console.WriteLine($"  Resumen: {exitosos} exitosos, {fallidos} fallidos");
-    if (totalOriginal > 0)
+    if (archivosDatos.Count == 0)
     {
-        double ratioTotal = (double)totalComprimido / totalOriginal * 100;
-        Console.WriteLine($"  Total: {Utils.FormatearTamano(totalOriginal)} → {Utils.FormatearTamano(totalComprimido)} ({ratioTotal:F1}%)");
+        Console.WriteLine("\n  No hay archivos para comprimir.");
+        return;
     }
+
+    // Determinar nombre de salida
+    string outputPath;
+    if (archivosDatos.Count == 1)
+    {
+        string key = archivosDatos.Keys.First();
+        outputPath = archivos[0] + ".cubo";
+    }
+    else
+    {
+        // Usar nombre de la carpeta padre o "archivo.cubo"
+        string? dir = Path.GetDirectoryName(Path.GetFullPath(archivos[0]));
+        string baseName = dir != null ? Path.GetFileName(dir) : "archivo";
+        if (string.IsNullOrEmpty(baseName)) baseName = "archivo";
+        outputPath = Path.Combine(dir ?? ".", baseName + ".cubo");
+    }
+
+    // Elegir método
+    byte metodo = CuboContainer.METHOD_BWT_ZSTD; // Default
+    // Si todos son texto, usar PAQ1
+    bool todosTexto = archivosDatos.All(kvp =>
+    {
+        string ext = Path.GetExtension(kvp.Key).ToLower();
+        return ext is ".txt" or ".csv" or ".log" or ".json" or ".xml" or ".md" or ".html" or ".css" or ".js" or ".cs" or ".py";
+    });
+    if (todosTexto && archivosDatos.Values.All(d => d.Length < 5 * 1024 * 1024))
+        metodo = CuboContainer.METHOD_PAQ1;
+
+    string metodoNombre = metodo == CuboContainer.METHOD_PAQ1 ? "PAQ1" : "BWT+Zstd";
+    Console.WriteLine($"\n  Método: {metodoNombre}");
+    Console.WriteLine($"  Creando: {outputPath}");
     Console.WriteLine();
-    Console.WriteLine("  Pulsa cualquier tecla para salir...");
-    Console.ReadKey();
+
+    try
+    {
+        var progreso = new Progress<(string archivo, double prog)>(p =>
+        {
+            Console.WriteLine($"  [{p.prog:P0}] {p.archivo}");
+        });
+
+        CuboContainer.CrearContenedor(outputPath, archivosDatos, metodo, progreso);
+
+        long tamComprimido = new FileInfo(outputPath).Length;
+        double ratio = totalOriginal > 0 ? (double)tamComprimido / totalOriginal * 100 : 0;
+
+        Console.WriteLine();
+        Console.WriteLine($"  ✓ Archivo creado: {outputPath}");
+        Console.WriteLine($"  ✓ {Utils.FormatearTamano(totalOriginal)} → {Utils.FormatearTamano(tamComprimido)} ({ratio:F1}%)");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"\n  ERROR: {ex.Message}");
+    }
 }
 
 static void EjecutarCompresion(string archivo, int minDim, int maxDim, int step)
@@ -571,4 +593,149 @@ static void ProbarPAQ1(string testFile)
     {
         Console.WriteLine($"  ✗ PAQ1 PIERDE: {1/mejora:F2}x peor que ZIP");
     }
+}
+
+static void TestContainer()
+{
+    Console.WriteLine("╔══════════════════════════════════════════════════╗");
+    Console.WriteLine("║     Test Round-Trip CuboContainer               ║");
+    Console.WriteLine("╚══════════════════════════════════════════════════╝");
+    Console.WriteLine();
+    
+    string testDir = Path.Combine(Path.GetTempPath(), "cubo_test_" + Guid.NewGuid().ToString("N")[..8]);
+    Directory.CreateDirectory(testDir);
+    
+    try
+    {
+        // 1. Crear archivos de prueba
+        Console.WriteLine("1. Creando archivos de prueba...");
+        var archivos = new Dictionary<string, byte[]>();
+        
+        // Texto repetitivo
+        string texto = string.Concat(Enumerable.Repeat("Hola mundo, este es un archivo de texto de prueba para Compressor3D.\n", 100));
+        archivos["documento.txt"] = System.Text.Encoding.UTF8.GetBytes(texto);
+        Console.WriteLine($"   documento.txt: {archivos["documento.txt"].Length} bytes");
+        
+        // JSON
+        string json = "{\"nombre\":\"test\",\"valor\":42,\"items\":[1,2,3]}";
+        archivos["datos.json"] = System.Text.Encoding.UTF8.GetBytes(json);
+        Console.WriteLine($"   datos.json: {archivos["datos.json"].Length} bytes");
+        
+        // Binario con subcarpeta
+        byte[] binario = new byte[1024];
+        new Random(42).NextBytes(binario);
+        archivos["subcarpeta/binario.bin"] = binario;
+        Console.WriteLine($"   subcarpeta/binario.bin: {archivos["subcarpeta/binario.bin"].Length} bytes");
+        
+        // Archivo grande con patrón repetitivo
+        byte[] patron = new byte[4096];
+        for (int i = 0; i < patron.Length; i++) patron[i] = (byte)(i % 256);
+        byte[] grande = new byte[50000];
+        for (int i = 0; i < grande.Length; i += patron.Length)
+            Array.Copy(patron, 0, grande, i, Math.Min(patron.Length, grande.Length - i));
+        archivos["grande.dat"] = grande;
+        Console.WriteLine($"   grande.dat: {archivos["grande.dat"].Length} bytes");
+        
+        Console.WriteLine();
+        
+        // 2. Comprimir con cada método
+        byte[] methods = { CuboContainer.METHOD_BWT_ZSTD, CuboContainer.METHOD_PAQ1 };
+        string[] methodNames = { "BWT+Zstd", "PAQ1" };
+        
+        for (int m = 0; m < methods.Length; m++)
+        {
+            Console.WriteLine($"--- Método: {methodNames[m]} ---");
+            string cuboPath = Path.Combine(testDir, $"test_{m}.cubo");
+            
+            try
+            {
+                CuboContainer.CrearContenedor(cuboPath, archivos, methods[m]);
+                
+                FileInfo info = new FileInfo(cuboPath);
+                long totalOriginal = 0;
+                foreach (var a in archivos) totalOriginal += a.Value.Length;
+                
+                double ratio = (double)info.Length / totalOriginal * 100;
+                Console.WriteLine($"   Contenedor: {info.Length} bytes (original: {totalOriginal}, ratio: {ratio:F1}%)");
+                
+                // Listar contenido
+                var entries = CuboContainer.ListarContenido(cuboPath);
+                foreach (var e in entries)
+                {
+                    string met = e.Method switch { 0 => "STORE", 1 => "BWT+Zstd", 2 => "PAQ1", 3 => "PAQ1_2D", _ => "?" };
+                    double r = e.OriginalSize > 0 ? (double)e.CompressedSize / e.OriginalSize * 100 : 0;
+                    Console.WriteLine($"     {e.Name}: {e.OriginalSize} -> {e.CompressedSize} ({r:F1}%) [{met}]");
+                }
+                
+                // Descomprimir
+                var extraidos = CuboContainer.ExtraerContenedor(cuboPath);
+                
+                // Verificar
+                bool todoOk = true;
+                foreach (var kvp in archivos)
+                {
+                    if (!extraidos.ContainsKey(kvp.Key))
+                    {
+                        Console.WriteLine($"   ✗ FALTA: {kvp.Key}");
+                        todoOk = false;
+                        continue;
+                    }
+                    
+                    byte[] original = kvp.Value;
+                    byte[] extraido = extraidos[kvp.Key];
+                    
+                    if (original.Length != extraido.Length)
+                    {
+                        Console.WriteLine($"   ✗ {kvp.Key}: tamaño diferente ({original.Length} vs {extraido.Length})");
+                        todoOk = false;
+                        continue;
+                    }
+                    
+                    string hashOrig = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(original))[..16];
+                    string hashExtra = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(extraido))[..16];
+                    
+                    if (hashOrig != hashExtra)
+                    {
+                        Console.WriteLine($"   ✗ {kvp.Key}: contenido diferente");
+                        todoOk = false;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"   ✓ {kvp.Key}: OK");
+                    }
+                }
+                
+                Console.WriteLine(todoOk ? $"   >>> {methodNames[m]}: TODOS OK <<<" : $"   >>> {methodNames[m]}: ERRORES <<<");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"   ERROR: {ex.Message}");
+            }
+            Console.WriteLine();
+        }
+        
+        // 3. Test smart compression
+        Console.WriteLine("--- Smart Compression ---");
+        byte[] randomData = new byte[100];
+        new Random().NextBytes(randomData);
+        var unSoloArchivo = new Dictionary<string, byte[]> { { "random.dat", randomData } };
+        string smartPath = Path.Combine(testDir, "smart.cubo");
+        CuboContainer.CrearContenedor(smartPath, unSoloArchivo, CuboContainer.METHOD_PAQ1);
+        var smartEntries = CuboContainer.ListarContenido(smartPath);
+        Console.WriteLine($"   Datos aleatorios 100b con PAQ1: method={smartEntries[0].Method} (0=STORE)");
+        Console.WriteLine(smartEntries[0].Method == 0 ? "   ✓ No comprimió datos aleatorios" : "   ✗ Debería guardar sin comprimir");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"ERROR GENERAL: {ex.Message}");
+        Console.WriteLine(ex.StackTrace);
+    }
+    finally
+    {
+        if (Directory.Exists(testDir))
+            try { Directory.Delete(testDir, true); } catch { }
+    }
+    
+    Console.WriteLine();
+    Console.WriteLine("=== Test completado ===");
 }

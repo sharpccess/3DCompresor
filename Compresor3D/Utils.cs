@@ -125,6 +125,10 @@ public static class Utils
                         archivo = "--test-paq:" + args[++i].Trim('"');
                     break;
 
+                case "--test-container":
+                    archivo = "--test-container";
+                    break;
+
                 case "--min-dim":
                     if (i + 1 < args.Length && int.TryParse(args[++i], out int min))
                         minDim = min;

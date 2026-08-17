@@ -330,6 +330,15 @@ public static class Compresor3DEngine
             throw new InvalidDataException("El archivo no tiene el formato .cubo (magic incorrecto).");
 
         byte version = br.ReadByte();
+        
+        // Versión 3 = contenedor multi-archivo
+        if (version == 3)
+        {
+            fs.Close(); // Cerrar el stream antes de usar CuboContainer
+            DescomprimirContenedor(rutaCubo);
+            return;
+        }
+        
         if (version > 2)
             throw new InvalidDataException($"Versión de formato no soportada: {version}");
 
@@ -389,5 +398,41 @@ public static class Compresor3DEngine
 
         Console.WriteLine($"  Archivo descomprimido: {rutaSalida}");
         Console.WriteLine($"  Tamaño original: {Utils.FormatearTamano(tamanoOriginal)}");
+    }
+    
+    /// <summary>Descomprime un contenedor multi-archivo v3 a una carpeta.</summary>
+    private static void DescomprimirContenedor(string rutaCubo)
+    {
+        // Determinar carpeta de salida (misma carpeta que el .cubo)
+        string? dir = Path.GetDirectoryName(rutaCubo) ?? ".";
+        string baseName = Path.GetFileNameWithoutExtension(rutaCubo);
+        string outputDir = Path.Combine(dir, baseName + "_extraido");
+        
+        // Crear carpeta si no existe
+        if (!Directory.Exists(outputDir))
+            Directory.CreateDirectory(outputDir);
+        
+        Console.WriteLine($"  Contenedor multi-archivo detectado");
+        Console.WriteLine($"  Extrayendo a: {outputDir}");
+        Console.WriteLine();
+        
+        // Extraer archivos
+        var archivos = CuboContainer.ExtraerContenedor(rutaCubo);
+        
+        int count = 0;
+        foreach (var kvp in archivos)
+        {
+            string filePath = Path.Combine(outputDir, kvp.Key);
+            string? fileDir = Path.GetDirectoryName(filePath);
+            if (fileDir != null && !Directory.Exists(fileDir))
+                Directory.CreateDirectory(fileDir);
+            
+            File.WriteAllBytes(filePath, kvp.Value);
+            count++;
+            Console.WriteLine($"  ✓ {kvp.Key} ({Utils.FormatearTamano(kvp.Value.Length)})");
+        }
+        
+        Console.WriteLine();
+        Console.WriteLine($"  {count} archivos extraídos a: {outputDir}");
     }
 }

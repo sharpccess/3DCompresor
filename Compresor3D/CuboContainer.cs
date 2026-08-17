@@ -13,7 +13,7 @@ public class CuboContainer
 {
     // Magic bytes para identificar el formato
     private static readonly byte[] MAGIC = { 0x43, 0x55, 0x42, 0x4F }; // "CUBO"
-    private const byte VERSION = 2;
+    private const byte VERSION = 3;
     
     // Métodos de compresión
     public const byte METHOD_NONE = 0;      // Sin compresión
@@ -102,12 +102,12 @@ public class CuboContainer
             
             // Escribir entrada
             byte[] nombreBytes = System.Text.Encoding.UTF8.GetBytes(nombre);
-            bw.Write(nombreBytes.Length);
-            bw.Write(nombreBytes);
-            bw.Write(datos.Length); // Tamaño original
-            bw.Write(datosComprimidos.Length); // Tamaño comprimido
-            bw.Write(metodoUsado);
-            bw.Write(datosComprimidos);
+            bw.Write(nombreBytes.Length);          // int - longitud del nombre
+            bw.Write(nombreBytes);                  // nombre
+            bw.Write((long)datos.Length);           // long - tamaño original
+            bw.Write((long)datosComprimidos.Length);// long - tamaño comprimido
+            bw.Write(metodoUsado);                  // byte - método
+            bw.Write(datosComprimidos);             // datos
             
             procesados++;
             progreso?.Report((nombre, (double)procesados / archivos.Count));
