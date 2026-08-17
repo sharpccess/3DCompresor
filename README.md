@@ -247,3 +247,5 @@ Usa ZstdSharp (port managed de Zstandard) al nivel máximo de compresión.
 ## Licencia
 
 MIT
+
+Fernando Castro
