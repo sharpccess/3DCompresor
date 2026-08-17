@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Formulas3D")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2813a0ec6ae705b4e95c3111a5142796f01cbcef")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+df25005149a0a0edaf5823713b8a500eb629d3f9")]
 [assembly: System.Reflection.AssemblyProductAttribute("Formulas3D")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Formulas3D")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
